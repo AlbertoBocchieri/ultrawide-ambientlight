@@ -128,6 +128,7 @@ RECT AmbientLight::GetPresentRect()
 HRESULT AmbientLight::UpdateSettings()
 {
     ValidateSettings();
+    m_ambient.Reset();
 
     if (m_hwnd)
     {
@@ -256,6 +257,11 @@ void AmbientLight::ValidateSettings()
     m_frameRate = m_settings.frameRate;
 
     m_settings.transitionTimeMs = std::clamp(m_settings.transitionTimeMs, 0, 5000);
+
+    if (!std::isfinite(m_settings.ambientRadius)) m_settings.ambientRadius = 360;
+    if (!std::isfinite(m_settings.ambientStrength)) m_settings.ambientStrength = 0.32f;
+    m_settings.ambientRadius = std::clamp(m_settings.ambientRadius, 0.0f, 2000.0f);
+    m_settings.ambientStrength = std::clamp(m_settings.ambientStrength, 0.0f, 1.0f);
 
     // Validate zoom
     m_settings.zoom = std::clamp(m_settings.zoom, 0u, 16u);
@@ -411,6 +417,10 @@ HRESULT AmbientLight::Initialize(HWND hwnd)
         return DXGI_ERROR_UNSUPPORTED;
     hr = swapchain3->SetColorSpace1(df.outputColorSpace);
     RETURN_IF_FAILED(hr);
+
+    hr = m_ambient.Initialize(m_device);
+    RETURN_IF_FAILED(hr);
+    m_ambient.Reset();
 
     hr = m_copy.Initialize(m_device, m_deferred.Get());
     RETURN_IF_FAILED(hr);
@@ -579,6 +589,31 @@ bool AmbientLight::RenderEffects()
     if (IS_BOX_EMPTY(game_box))
         return false;
 
+    if (m_settings.vlcAmbient) {
+        TextureView desktopView;
+        hr = desktopView.CreateViews(m_device.Get(), desktopTexture.Get(), false, true, false);
+        if (SUCCEEDED(hr)) {
+            RECT video = {LONG(game_box.left), LONG(game_box.top), LONG(game_box.right), LONG(game_box.bottom)};
+            // Embedded bars are also excluded from the source used for the background.
+            for (size_t i = 2; i < m_blackBars.size(); ++i) {
+                const auto& b = m_blackBars[i];
+                if (b.position == Top) video.top = b.height;
+                if (b.position == Bottom) video.bottom = m_windowHeight - b.height;
+                if (b.position == Left) video.left = b.width;
+                if (b.position == Right) video.right = m_windowWidth - b.width;
+            }
+            auto df = GetDesktopFormat();
+            auto encoding = Detection::GetLumaEncoding(desc.Format, df.colorSpace);
+            hr = m_ambient.Render(m_deferred.Get(), desktopView, m_effectCanvasTexture, video,
+                static_cast<UINT>(encoding), m_settings.ambientRadius, m_settings.ambientStrength,
+                m_settings.transitionTimeMs);
+        }
+        if (FAILED(hr)) { HandleRuntimeError(hr); return false; }
+        m_effectRendered = true;
+        m_zoomRendered = false;
+        return true;
+    }
+
     D3D11_TEXTURE2D_DESC gameDesc = {};
     m_gameTexture.GetTexture()->GetDesc(&gameDesc);
     //assert(gameDesc.Format == desc.Format);
@@ -703,6 +738,7 @@ bool AmbientLight::RenderEffects()
 
 void AmbientLight::ClearEffects()
 {
+    m_ambient.Reset();
     if (m_effectCanvasTexture.GetRTV())
     {
         ID3D11RenderTargetView* rtv = m_effectCanvasTexture.GetRTV();
@@ -750,7 +786,7 @@ void AmbientLight::RenderBackBuffer()
 
     if (m_effectRendered)
     {
-        if (m_settings.vignetteEnabled)
+        if (!m_settings.vlcAmbient && m_settings.vignetteEnabled)
         {
             hr = m_vignette.Render(m_deferred.Get(), m_effectCanvasTexture);
             if (FAILED(hr))
@@ -760,7 +796,7 @@ void AmbientLight::RenderBackBuffer()
             }
         }
 
-        if (m_settings.useAutoDetection && m_settings.autoDetectionLightMask)
+        if (m_settings.useAutoDetection && (m_settings.vlcAmbient || m_settings.autoDetectionLightMask))
         {
             hr = m_detection.RenderLumaMask(m_deferred.Get(), m_effectCanvasTexture);
             if (FAILED(hr))
@@ -770,7 +806,7 @@ void AmbientLight::RenderBackBuffer()
             }
         }
 
-        if (m_settings.autoDetectionInner)
+        if (!m_settings.vlcAmbient && m_settings.autoDetectionInner)
         {
             if (m_blackBars.size() == 4)
             {

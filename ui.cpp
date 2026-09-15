@@ -370,6 +370,12 @@ bool RenderUI(HWND hwnd, AppSettings& settings, UINT gameWidth, UINT gameHeight,
                 "Hold Shift/Alt for faster/slower edits.\n"
                 "Double-click or Ctrl+click to enter a value.");
 
+            if (ImGui::Checkbox("VLC ambient background", &settings.vlcAmbient)) SaveSettings(settings);
+            if (settings.vlcAmbient) {
+                if (ImGui::DragFloat("Background radius", &settings.ambientRadius, 1, 0, 2000, "%.0f px")) SaveSettings(settings);
+                if (ImGui::SliderFloat("Background strength", &settings.ambientStrength, 0, 1)) SaveSettings(settings);
+            }
+            ImGui::BeginDisabled(settings.vlcAmbient);
             ImGui::SeparatorText("Blur");
             {
                 int blurPasses = static_cast<int>(settings.blurPasses);
@@ -415,6 +421,7 @@ bool RenderUI(HWND hwnd, AppSettings& settings, UINT gameWidth, UINT gameHeight,
                 }
             }
 
+            ImGui::EndDisabled();
             ImGui::SeparatorText("Misc");
             int frameRate = static_cast<int>(settings.frameRate);
             if (ImGui::DragInt("Frame rate", &frameRate, 0.1f, 10, 500))
@@ -430,6 +437,7 @@ bool RenderUI(HWND hwnd, AppSettings& settings, UINT gameWidth, UINT gameHeight,
             }
             ImGui::SameLine(); HelpMarker("Temporal color smoothing. 0 disables it; 300-1000 ms is a useful range.");
 
+            ImGui::BeginDisabled(settings.vlcAmbient);
             int zoom = static_cast<int>(settings.zoom);
             if (ImGui::DragInt("Zoom", &zoom, 1, 0, 16))
             {
@@ -442,6 +450,7 @@ bool RenderUI(HWND hwnd, AppSettings& settings, UINT gameWidth, UINT gameHeight,
 
             if (ImGui::Checkbox("Mirrored", &settings.mirrored))
                 SaveSettings(settings);
+            ImGui::EndDisabled();
 
             ImGui::EndTabItem();
         }

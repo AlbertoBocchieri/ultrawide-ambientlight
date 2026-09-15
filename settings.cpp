@@ -166,6 +166,12 @@ bool ReadSettings(AppSettings& settings)
     int transitionTimeMs = DEFAULT_TRANSITION_TIME;
     inipp::get_value(ini.sections["Game"], "TransitionTime", transitionTimeMs);
 
+    bool vlcAmbient = true;
+    float ambientRadius = 360.0f, ambientStrength = 0.32f;
+    inipp::get_value(ini.sections["Game"], "VlcAmbient", vlcAmbient);
+    inipp::get_value(ini.sections["Game"], "AmbientRadius", ambientRadius);
+    inipp::get_value(ini.sections["Game"], "AmbientStrength", ambientStrength);
+
     bool mirrored = DEFAULT_MIRRORED;
     inipp::get_value(ini.sections["Game"], "Mirrored", mirrored);
 
@@ -248,6 +254,9 @@ bool ReadSettings(AppSettings& settings)
     settings.mipmapLevels = mipmapLevels;
     settings.frameRate = frameRate;
     settings.transitionTimeMs = transitionTimeMs;
+    settings.vlcAmbient = vlcAmbient;
+    settings.ambientRadius = ambientRadius;
+    settings.ambientStrength = ambientStrength;
     settings.mirrored = mirrored;
     settings.stretched = stretched;
     settings.stretchFactor = stretchFactor;
@@ -355,6 +364,9 @@ void SaveSettings(AppSettings& settings)
     ini.sections["Game"]["MipmapLevels"] = std::to_string(settings.mipmapLevels);
     ini.sections["Game"]["FrameRate"] = std::to_string(settings.frameRate);
     ini.sections["Game"]["TransitionTime"] = std::to_string(settings.transitionTimeMs);
+    ini.sections["Game"]["VlcAmbient"] = settings.vlcAmbient ? "true" : "false";
+    ini.sections["Game"]["AmbientRadius"] = std::to_string(settings.ambientRadius);
+    ini.sections["Game"]["AmbientStrength"] = std::to_string(settings.ambientStrength);
     ini.sections["Game"]["Mirrored"] = settings.mirrored ? "true" : "false";
     //ini.sections["Game"]["Stretched"] = settings.stretched ? "true" : "false";
     ini.sections["Game"]["StretchFactor"] = std::to_string(settings.stretchFactor);

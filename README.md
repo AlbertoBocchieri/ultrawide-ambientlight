@@ -15,6 +15,30 @@ Scenarios:
 
 ## Usage
 
+### VLC ambient background
+
+`Effects > VLC ambient background` enables the new default effect: a centered,
+aspect-preserving background with Dual Kawase blur, FP16 linear-light color
+history, and a transparent video rectangle. Defaults match the personal VLC
+build: radius **360 px**, strength **0.32**, transition **500 ms**, and a maximum
+history dimension of **320 px**. Disable this option to use the classic effects.
+
+Automatic detection now checks the captured frame before rendering. Band
+shrinkage is immediate; growth still needs four confirmations at the configured
+detection interval. The current-frame luma mask rejects visible pixels and full
+presentation clears previous band positions. Desktop capture cannot distinguish
+true bars from perfectly black video content with certainty; use manual aspect
+ratio selection when the video's dimensions are known.
+
+This is a D3D11 implementation of the VLC effect's rendering approach, not a
+pixel-identical libplacebo integration: the source is the already composed
+desktop, not decoded video with timestamps and source HDR metadata. Capture
+gaps reset history, but seeks cannot be identified from media timestamps.
+
+Validation: `ctest --test-dir out/build/vlc --output-on-failure` includes production
+GPU shader tests through WARP. Run `ambient_gpu_test.exe hardware` for a hardware
+GPU check, including deferred rendering and D3D11 debug validation when available.
+
 1. Launch `ambientlight.exe` and choose auto-detection or manual resolution configuration.
 2. Start your game in borderless fullscreen, or play video content in fullscreen in a media player or browser.
 3. Use the configuration UI to adjust the effects to your liking.

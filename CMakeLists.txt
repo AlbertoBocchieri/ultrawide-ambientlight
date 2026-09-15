@@ -58,6 +58,7 @@ function(compile_shader_entry SHADER_FILE ENTRY_POINT VARIABLE_SUFFIX DEFINES)
     # Export the generated header path to the global list
     set(GENERATED_SHADER_HEADERS ${GENERATED_SHADER_HEADERS} ${SHADER_OUTPUT} PARENT_SCOPE)
 endfunction()
+compile_shader_entry("shaders/ambient.hlsl" "main" "main" "")
 compile_shader_entry("shaders/blur.hlsl" "main" "main" "")
 compile_shader_entry("shaders/luma.hlsl" "mainSDR" "mainSDR" "")
 compile_shader_entry("shaders/luma.hlsl" "mainHDR10" "mainHDR10" "")
@@ -112,6 +113,7 @@ set(SRC
 	present.cpp
 	settings.cpp
 	ui.cpp
+	shaders/ambient.cpp
 	shaders/copy.cpp
 	shaders/blur.cpp
 	shaders/vignette.cpp
@@ -159,6 +161,11 @@ install(DIRECTORY scripts/ DESTINATION bin)
 install(FILES config.ini DESTINATION bin)
 
 if (BUILD_TESTING)
+    add_executable(ambient_gpu_test tests/ambient_gpu_test.cpp shaders/ambient.cpp shaders/detect.cpp ${GENERATED_SHADER_HEADERS})
+    target_include_directories(ambient_gpu_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${DIRECTXMATH_INCLUDE_DIR}")
+    target_link_libraries(ambient_gpu_test PRIVATE d3d11 dxgi)
+    set_property(TARGET ambient_gpu_test PROPERTY CXX_STANDARD 20)
+    add_test(NAME ambient_gpu COMMAND ambient_gpu_test)
     add_executable(luma_encoding_test tests/luma_encoding_test.cpp)
     target_include_directories(luma_encoding_test PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}"

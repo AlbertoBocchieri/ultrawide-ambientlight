@@ -4,6 +4,7 @@
 #include "capture.h"
 #include "dcomp.h"
 #include "shaders/copy.h"
+#include "shaders/ambient.h"
 #include "shaders/blur.h"
 #include "shaders/fullscreenquad.h"
 #include "shaders/vignette.h"
@@ -53,6 +54,7 @@ private:
     Blur m_blurDownscale;
     Blur m_blurPre;
     Copy m_copy;
+    AmbientBackground m_ambient;
     Vignette m_vignette;
     Detection m_detection;
     ElapsedTimer m_detectionTimer;

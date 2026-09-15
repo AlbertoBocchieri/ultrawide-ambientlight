@@ -72,6 +72,9 @@ struct AppSettings
     UINT blurSamples = DEFAULT_BLUR_SAMPLES;
     UINT frameRate = DEFAULT_FRAMERATE;
     int transitionTimeMs = DEFAULT_TRANSITION_TIME;
+    bool vlcAmbient = true;
+    float ambientRadius = 360.0f;
+    float ambientStrength = 0.32f;
     bool mirrored = DEFAULT_MIRRORED;
     bool stretched = DEFAULT_STRETCHED;
     float stretchFactor = DEFAULT_STRETCH_FACTOR;

@@ -1,5 +1,6 @@
 #pragma once
 #include "../common.h"
+#include "ambient_constants.h"
 
 // A small linear-light background, independent of the video's opaque rectangle.
 class AmbientBackground

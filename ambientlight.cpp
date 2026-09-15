@@ -8,29 +8,15 @@
 #include <bit>
 #include <cmath>
 
+static_assert(static_cast<UINT>(Detection::LumaEncoding::SDR) == AMBIENT_SDR);
+static_assert(static_cast<UINT>(Detection::LumaEncoding::HDR10) == AMBIENT_HDR10);
+static_assert(static_cast<UINT>(Detection::LumaEncoding::SCRGB) == AMBIENT_SCRGB);
+
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dcomp.lib")
 #pragma comment(lib, "Winmm.lib")
 
 #define IS_BOX_EMPTY(box) ((box).left >= (box).right || (box).top >= (box).bottom)
-
-D3D11_BOX GetMirroredBox(D3D11_BOX box, UINT width, UINT height)
-{
-    D3D11_BOX mirrored = box;
-    if (RECT_HEIGHT(box) == height)
-    {
-        // left/right
-        mirrored.left = width - box.right;
-        mirrored.right = width - box.left;
-    }
-    else if (RECT_WIDTH(box) == width)
-    {
-        // top/bottom
-        mirrored.top = height - box.bottom;
-        mirrored.bottom = height - box.top;
-    }
-    return mirrored;
-}
 
 static HRESULT FindAdapterForMonitor(IDXGIFactory1* factory, HMONITOR monitor, ComPtr<IDXGIAdapter1>& result)
 {
@@ -71,7 +57,6 @@ AmbientLight::AmbientLight()
     m_ready(false),
     m_effectRendered(false),
     m_presented(false),
-    m_zoomRendered(false),
     m_gameWidth(0),
     m_gameHeight(0),
     m_windowWidth(0),
@@ -80,8 +65,7 @@ AmbientLight::AmbientLight()
     m_frameRate(60),
     m_lastPresentTime(0),
     m_perfFreq(0),
-    m_showConfigWindow(false),
-    m_clearConfigWindow(false)
+    m_showConfigWindow(false)
 {
     timeBeginPeriod(1);
 }
@@ -125,59 +109,48 @@ RECT AmbientLight::GetPresentRect()
     return GetDisplayRect(m_settings.display);
 }
 
-HRESULT AmbientLight::UpdateSettings()
+HRESULT AmbientLight::UpdateGeometry()
 {
     ValidateSettings();
     m_ambient.Reset();
 
-    if (m_hwnd)
+    if (!m_settings.vlcAmbient)
     {
-        HRESULT hr = S_OK;
-        //m_blurPre.Initialize(m_device,
-        //    m_deferred,
-        //    m_gameWidth,
-        //    m_gameHeight,
-        //    m_settings.blurSamples);
-
-        UINT mipWidth = std::max(1u, m_gameWidth >> m_settings.mipmapLevels);
-        UINT mipHeight = std::max(1u, m_gameHeight >> m_settings.mipmapLevels);
-        hr = m_blurDownscale.Initialize(m_device,
-            m_deferred,
-            mipWidth,
-            mipHeight,
-            m_settings.blurSamples);
+        const UINT mipWidth = std::max(1u, m_gameWidth >> m_settings.mipmapLevels);
+        const UINT mipHeight = std::max(1u, m_gameHeight >> m_settings.mipmapLevels);
+        HRESULT hr = m_blurDownscale.Initialize(m_device, m_deferred,
+            mipWidth, mipHeight, m_settings.blurSamples);
         RETURN_IF_FAILED(hr);
-
-        float windowAspect = (float)m_windowWidth / (float)m_windowHeight;
-        hr = m_vignette.Initialize(m_device,
-            m_deferred,
-            m_settings.vignetteIntensity,
-            m_settings.vignetteRadius,
-            m_settings.vignetteSmoothness,
-            windowAspect);
-        RETURN_IF_FAILED(hr);
-
-        auto df = GetDesktopFormat();
-        hr = CreateOffscreen(df.format, df.outputFormat);
-        RETURN_IF_FAILED(hr);
-
-        DXGI_COLOR_SPACE_TYPE colorSpace = df.colorSpace;
-        hr = m_detection.Initialize(m_device,
-            m_immediate,
-            m_windowWidth,
-            m_windowHeight,
-            m_settings.autoDetectionBrightnessThreshold,
-            m_settings.autoDetectionBlackRatio,
-            m_settings.autoDetectionSymmetricBars,
-            m_settings.autoDetectionReservedArea ? m_settings.autoDetectionReservedWidth : 0,
-            m_settings.autoDetectionReservedArea ? m_settings.autoDetectionReservedHeight : 0,
-            df.format,
-            colorSpace);
-        RETURN_IF_FAILED(hr);
-
-        InitUI(m_hwnd, m_device.Get(), m_deferred.Get(), m_settings);
     }
 
+    const auto format = GetDesktopFormat();
+    return CreateOffscreen(format.format, format.outputFormat);
+}
+
+HRESULT AmbientLight::UpdateSettings()
+{
+    HRESULT hr = UpdateGeometry();
+    RETURN_IF_FAILED(hr);
+
+    if (!m_settings.vlcAmbient)
+    {
+        hr = m_vignette.Initialize(m_device, m_deferred,
+            m_settings.vignetteIntensity, m_settings.vignetteRadius,
+            m_settings.vignetteSmoothness, float(m_windowWidth) / m_windowHeight);
+        RETURN_IF_FAILED(hr);
+    }
+
+    const auto format = GetDesktopFormat();
+    hr = m_detection.Initialize(m_device, m_immediate, m_windowWidth, m_windowHeight,
+        m_settings.autoDetectionBrightnessThreshold,
+        m_settings.autoDetectionBlackRatio,
+        m_settings.autoDetectionSymmetricBars,
+        m_settings.autoDetectionReservedArea ? m_settings.autoDetectionReservedWidth : 0,
+        m_settings.autoDetectionReservedArea ? m_settings.autoDetectionReservedHeight : 0,
+        format.format, format.colorSpace);
+    RETURN_IF_FAILED(hr);
+
+    InitUI(m_hwnd, m_device.Get(), m_deferred.Get(), m_settings);
     return S_OK;
 }
 
@@ -446,28 +419,40 @@ HRESULT AmbientLight::Initialize(HWND hwnd)
 HRESULT AmbientLight::CreateOffscreen(DXGI_FORMAT captureFormat, DXGI_FORMAT outputFormat)
 {
     HRESULT hr = S_OK;
-    // Create with full mip chain (0) and enable mip generation support
-    hr = m_gameTexture.RecreateTexture(m_device.Get(), captureFormat, m_gameWidth, m_gameHeight, 0, true);
-    RETURN_IF_FAILED(hr);
-
-    // m_downsampledTexture now matches the selected mip level size
-    UINT mipWidth = std::max(1u, m_gameWidth >> m_settings.mipmapLevels);
-    UINT mipHeight = std::max(1u, m_gameHeight >> m_settings.mipmapLevels);
-    hr = m_downsampledTexture.RecreateTexture(m_device.Get(), captureFormat,
-        mipWidth,
-        mipHeight);
-    RETURN_IF_FAILED(hr);
-
-    for (auto& texture : m_temporalTextures)
+    if (m_settings.vlcAmbient)
     {
-        hr = texture.RecreateTexture(m_device.Get(), captureFormat, mipWidth, mipHeight);
-        RETURN_IF_FAILED(hr);
+        m_gameTexture.Clear();
+        m_downsampledTexture.Clear();
+        m_temporalTextures[0].Clear();
+        m_temporalTextures[1].Clear();
+        m_processedBlurTexture.Clear();
     }
+    else
+    {
+        // Create with full mip chain (0) and enable mip generation support
+        hr = m_gameTexture.RecreateTexture(m_device.Get(), captureFormat, m_gameWidth, m_gameHeight, 0, true);
+        RETURN_IF_FAILED(hr);
 
-    hr = m_processedBlurTexture.RecreateTexture(m_device.Get(), captureFormat,
-        m_gameWidth,
-        m_gameHeight);
-    RETURN_IF_FAILED(hr);
+        // m_downsampledTexture now matches the selected mip level size
+        UINT mipWidth = std::max(1u, m_gameWidth >> m_settings.mipmapLevels);
+        UINT mipHeight = std::max(1u, m_gameHeight >> m_settings.mipmapLevels);
+        hr = m_downsampledTexture.RecreateTexture(m_device.Get(), captureFormat,
+            mipWidth,
+            mipHeight);
+        RETURN_IF_FAILED(hr);
+
+        for (auto& texture : m_temporalTextures)
+        {
+            hr = texture.RecreateTexture(m_device.Get(), captureFormat, mipWidth, mipHeight);
+            RETURN_IF_FAILED(hr);
+        }
+
+        hr = m_processedBlurTexture.RecreateTexture(m_device.Get(), captureFormat,
+            m_gameWidth,
+            m_gameHeight);
+        RETURN_IF_FAILED(hr);
+
+    }
 
     hr = m_effectCanvasTexture.RecreateTexture(m_device.Get(), outputFormat,
         m_windowWidth,
@@ -610,17 +595,10 @@ bool AmbientLight::RenderEffects()
         }
         if (FAILED(hr)) { HandleRuntimeError(hr); return false; }
         m_effectRendered = true;
-        m_zoomRendered = false;
         return true;
     }
 
-    D3D11_TEXTURE2D_DESC gameDesc = {};
-    m_gameTexture.GetTexture()->GetDesc(&gameDesc);
-    //assert(gameDesc.Format == desc.Format);
-
     m_deferred->CopySubresourceRegion(m_gameTexture.GetTexture(), 0, 0, 0, 0, desktopTexture.Get(), 0, &game_box);
-
-    // m_blurPre.Render(m_deferred.Get(), m_gameTexture, m_settings.blurPasses);
 
     // Generate mipmaps for the captured game area
     m_deferred->GenerateMips(m_gameTexture.GetSRV());
@@ -690,10 +668,6 @@ bool AmbientLight::RenderEffects()
     float color[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
     m_deferred->ClearRenderTargetView(rtv, color);
 
-    D3D11_TEXTURE2D_DESC desc2 = {};
-    m_processedBlurTexture.GetTexture()->GetDesc(&desc2);
-
-
     for (int i = 0; i < 2; i++)
     {
         BlackBar srcBar = m_blackBars[i];
@@ -749,7 +723,6 @@ void AmbientLight::ClearEffects()
         m_presented = false;
     }
     m_effectRendered = false;
-    m_zoomRendered = false;
     m_temporalReady = false;
     m_lastTemporalTime = 0;
     m_temporalIndex = 0;
@@ -859,7 +832,6 @@ void AmbientLight::RenderBackBuffer()
                             return;
                         }
 
-                        m_zoomRendered = true;
                     }
                 }
                 else
@@ -904,7 +876,6 @@ void AmbientLight::Present()
     // band area after a shrink, orientation change, or disabled effect.
     HRESULT hr = m_swapchain->Present(1, 0);
     m_presented = SUCCEEDED(hr);
-    m_clearConfigWindow = false;
     HandleRuntimeError(hr);
 }
 
@@ -929,7 +900,7 @@ void AmbientLight::Detect()
         hr = m_detection.Detect(m_immediate.Get(), view, m_detectionTimer.HasElapsed(m_settings.autoDetectionTime));
     if (FAILED(hr)) { HandleRuntimeError(hr); return; }
     if (m_detection.GetDetectedBars() != m_blackBars) {
-        hr = UpdateSettings();
+        hr = UpdateGeometry();
         if (FAILED(hr)) HandleRuntimeError(hr);
     }
 }
@@ -988,7 +959,6 @@ void AmbientLight::ShowConfigWindow(bool show)
 {
     if (show != m_showConfigWindow)
     {
-        m_clearConfigWindow = true;
         m_showConfigWindow = show;
         DWORD dwExStyle = GetWindowLong(m_hwnd, GWL_EXSTYLE);
 

@@ -35,6 +35,7 @@ private:
 
     AppSettings m_settings;
     HRESULT UpdateSettings();
+    HRESULT UpdateGeometry();
     void ValidateSettings();
 
     DesktopFormat GetDesktopFormat();
@@ -52,7 +53,6 @@ private:
 
     DesktopCapture m_capture;
     Blur m_blurDownscale;
-    Blur m_blurPre;
     Copy m_copy;
     AmbientBackground m_ambient;
     Vignette m_vignette;
@@ -62,7 +62,6 @@ private:
     bool m_ready;
     bool m_effectRendered;
     bool m_presented;
-    bool m_zoomRendered;
     bool m_temporalReady = false;
     INT64 m_lastTemporalTime = 0;
     UINT m_temporalIndex = 0;
@@ -109,7 +108,6 @@ private:
 
     void ShowConfigWindow(bool show);
     bool m_showConfigWindow;
-    bool m_clearConfigWindow;
 
     std::string GetDebugString();
 };

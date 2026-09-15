@@ -43,14 +43,14 @@ function(compile_shader_entry SHADER_FILE ENTRY_POINT VARIABLE_SUFFIX DEFINES)
         add_custom_command(
             OUTPUT ${SHADER_OUTPUT}
             COMMAND ${FXC} /T cs_5_0 /E ${ENTRY_POINT} ${PREPROCESSOR_ARGS} /Fh ${SHADER_OUTPUT} ${CMAKE_CURRENT_SOURCE_DIR}/${SHADER_FILE} /Vn g_${UNIQUE_NAME}
-            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${SHADER_FILE}
+            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${SHADER_FILE} ${ARGN}
             COMMENT "Compiling ${SHADER_FILE} [Entry: ${ENTRY_POINT}] [Defines: ${DEFINES}] -> g_${UNIQUE_NAME}"
         )
     else()
         add_custom_command(
             OUTPUT ${SHADER_OUTPUT}
             COMMAND shader_compiler ${CMAKE_CURRENT_SOURCE_DIR}/${SHADER_FILE} ${ENTRY_POINT} ${SHADER_OUTPUT} g_${UNIQUE_NAME} ${DEFINES}
-            DEPENDS shader_compiler ${CMAKE_CURRENT_SOURCE_DIR}/${SHADER_FILE}
+            DEPENDS shader_compiler ${CMAKE_CURRENT_SOURCE_DIR}/${SHADER_FILE} ${ARGN}
             COMMENT "Compiling ${SHADER_FILE} [Entry: ${ENTRY_POINT}] [Defines: ${DEFINES}] -> g_${UNIQUE_NAME}"
         )
     endif()
@@ -58,7 +58,8 @@ function(compile_shader_entry SHADER_FILE ENTRY_POINT VARIABLE_SUFFIX DEFINES)
     # Export the generated header path to the global list
     set(GENERATED_SHADER_HEADERS ${GENERATED_SHADER_HEADERS} ${SHADER_OUTPUT} PARENT_SCOPE)
 endfunction()
-compile_shader_entry("shaders/ambient.hlsl" "main" "main" "")
+compile_shader_entry("shaders/ambient.hlsl" "main" "main" ""
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ambient_constants.h")
 compile_shader_entry("shaders/blur.hlsl" "main" "main" "")
 compile_shader_entry("shaders/luma.hlsl" "mainSDR" "mainSDR" "")
 compile_shader_entry("shaders/luma.hlsl" "mainHDR10" "mainHDR10" "")

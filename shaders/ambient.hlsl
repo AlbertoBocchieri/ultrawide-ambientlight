@@ -1,3 +1,5 @@
+#include "ambient_constants.h"
+
 cbuffer Params : register(b0)
 {
     float4 rect;
@@ -16,8 +18,8 @@ SamplerState mirrorSampler : register(s0);
 
 float3 decode(float3 c)
 {
-    if (encoding == 2) return c; // scRGB
-    if (encoding == 0) return pow(max(c, 0), 2.2);
+    if (encoding == AMBIENT_SCRGB) return c; // scRGB
+    if (encoding == AMBIENT_SDR) return pow(max(c, 0), 2.2);
     float3 p = pow(saturate(c), 1.0 / 78.84375);
     c = pow(max(p - 0.8359375, 0) / (18.8515625 - 18.6875 * p), 1.0 / 0.1593017578125);
     // PQ / BT.2020 to scRGB: 1.0 is 80 nits.
@@ -34,19 +36,19 @@ void main(uint3 id : SV_DispatchThreadID)
     if (id.x >= w || id.y >= h) return;
     float2 uv = (float2(id.xy) + 0.5) / float2(w, h);
     float4 c;
-    if (mode == 0) { // Exact pixel conversion before filtering.
+    if (mode == AMBIENT_CONVERT) { // Exact pixel conversion before filtering.
         c = source.Load(int3(id.xy + uint2(rect.xy), 0));
         c = float4(decode(c.rgb), 1);
-    } else if (mode == 1) { // Center crop to fill the background's aspect ratio.
+    } else if (mode == AMBIENT_CROP) { // Center crop to fill the background's aspect ratio.
         c = source.SampleLevel(mirrorSampler, rect.xy + uv * rect.zw, mip);
-    } else if (mode == 2) { // Dual Kawase downsample.
+    } else if (mode == AMBIENT_DOWNSAMPLE) { // Dual Kawase downsample.
         c = source.SampleLevel(mirrorSampler, uv, 0) * 4;
         c += source.SampleLevel(mirrorSampler, uv + stepSize, 0);
         c += source.SampleLevel(mirrorSampler, uv - stepSize, 0);
         c += source.SampleLevel(mirrorSampler, uv + float2(stepSize.x, -stepSize.y), 0);
         c += source.SampleLevel(mirrorSampler, uv + float2(-stepSize.x, stepSize.y), 0);
         c /= 8;
-    } else if (mode == 3) { // Dual Kawase upsample.
+    } else if (mode == AMBIENT_UPSAMPLE) { // Dual Kawase upsample.
         c = source.SampleLevel(mirrorSampler, uv + float2(2 * stepSize.x, 0), 0);
         c += source.SampleLevel(mirrorSampler, uv - float2(2 * stepSize.x, 0), 0);
         c += source.SampleLevel(mirrorSampler, uv + float2(0, 2 * stepSize.y), 0);
@@ -56,7 +58,7 @@ void main(uint3 id : SV_DispatchThreadID)
         c += source.SampleLevel(mirrorSampler, uv + float2(stepSize.x, -stepSize.y), 0) * 2;
         c += source.SampleLevel(mirrorSampler, uv + float2(-stepSize.x, stepSize.y), 0) * 2;
         c /= 12;
-    } else if (mode == 4) {
+    } else if (mode == AMBIENT_SMOOTH) {
         c = source.Load(int3(id.xy, 0));
         if (mixAmount < 1) c = lerp(history.Load(int3(id.xy, 0)), c, mixAmount);
     } else {

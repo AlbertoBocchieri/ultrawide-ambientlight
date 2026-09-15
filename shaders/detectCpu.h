@@ -9,11 +9,11 @@ inline bool isLineMostlyBlack(const float* data, UINT length, UINT stride, float
     for (UINT i = 0; i < length; ++i)
     {
         float pixel = data[i * stride];
+        sum += pixel;
+        sumSq += pixel * pixel;
         if (pixel <= blackThreshold)
         {
             ++darkPixelCount;
-            sum += pixel;
-            sumSq += pixel * pixel;
         }
     }
 
@@ -24,8 +24,9 @@ inline bool isLineMostlyBlack(const float* data, UINT length, UINT stride, float
     if (darkRatio < blackRatio)
         return false;
 
-    // Variance of the dark pixels only: Var = E[x^2] - E[x]^2
-    float n = (float)darkPixelCount;
+    // A real bar is uniform across the whole line; a dark image containing
+    // visible detail is not.
+    float n = (float)length;
     float mean = sum / n;
     float variance = (sumSq / n) - (mean * mean);
 
@@ -148,50 +149,15 @@ inline bool IsLineActive(const UINT* activeFlags, int index)
 
 UINT FindBarSizeCenterOutWithFlags(const UINT* activeFlags, int startIdx, int step, int edgeIdx)
 {
-    int minBarSize = 16;
-    int lastKnownMovieLine = startIdx;
+    const int minBarSize = 16;
+    int lastActiveLine = startIdx;
 
     for (int i = startIdx; (step > 0) ? (i <= edgeIdx) : (i >= edgeIdx); i += step)
     {
-        int linesRemainingToEdge = (step < 0) ? i : (edgeIdx - i);
-        int currentMovieHalfSize = std::abs(lastKnownMovieLine - startIdx);
-        if (currentMovieHalfSize < 4) { currentMovieHalfSize = 4; }
-
-        int adaptiveUiThicknessMax = static_cast<int>(currentMovieHalfSize * 0.3f);
-
-        // Hard Early Breaks
-        if (lastKnownMovieLine == (i - step)) {
-            if (linesRemainingToEdge < minBarSize) return 0;
-        }
-        else {
-            if (linesRemainingToEdge <= adaptiveUiThicknessMax) break;
-        }
-
-        bool lineIsActive = IsLineActive(activeFlags, i);
-
-        if (lineIsActive)
-        {
-            int blockStart = i;
-            int blockLength = 0;
-
-            while ((step > 0 ? (i <= edgeIdx) : (i >= edgeIdx)) && IsLineActive(activeFlags, i))
-            {
-                blockLength++;
-                i += step;
-            }
-
-            int adaptiveGapMax = static_cast<int>(currentMovieHalfSize * 0.05f);
-            int blackGapLeftBehind = std::abs(blockStart - lastKnownMovieLine);
-
-            if (blockLength > adaptiveUiThicknessMax || blackGapLeftBehind <= adaptiveGapMax) {
-                lastKnownMovieLine = i - step;
-            }
-
-            i -= step;
-        }
+        if (IsLineActive(activeFlags, i))
+            lastActiveLine = i;
     }
 
-    int barSize = (step < 0) ? lastKnownMovieLine : (edgeIdx - lastKnownMovieLine);
+    int barSize = (step < 0) ? lastActiveLine : (edgeIdx - lastActiveLine);
     return (barSize < minBarSize) ? 0 : static_cast<UINT>(barSize);
 }
-

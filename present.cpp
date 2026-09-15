@@ -4,6 +4,9 @@
 
 #define APP_WINDOW_CLASS_NAME L"ambientlightapp"
 
+static constexpr UINT_PTR DISPLAY_CHANGE_TIMER_ID = 1;
+static constexpr UINT DISPLAY_CHANGE_DEBOUNCE_MS = 500;
+
 PresentWindow::PresentWindow()
 {
 }
@@ -28,7 +31,7 @@ void PresentWindow::FindAndShow()
                 return FALSE; // stop enumeration
             }
             return TRUE; // continue enumeration
-        }, NULL);
+        }, 0);
 }
 
 void PresentWindow::Create(HINSTANCE hInstance, AmbientLight* render)
@@ -129,11 +132,29 @@ LRESULT CALLBACK PresentWindow::WndProc(HWND hwnd, UINT message, WPARAM wParam, 
 
     case WM_DISPLAYCHANGE:
     {
+        // HDR toggles emit several mode-change notifications while DWM and the
+        // driver are still rebuilding the display path. Reinitialize once the
+        // notifications have settled instead of repeatedly replacing devices.
+        SetTimer(hwnd, DISPLAY_CHANGE_TIMER_ID, DISPLAY_CHANGE_DEBOUNCE_MS, nullptr);
+    }
+    return 0;
+
+    case WM_TIMER:
+    {
+        if (wParam != DISPLAY_CHANGE_TIMER_ID)
+            break;
+
+        KillTimer(hwnd, DISPLAY_CHANGE_TIMER_ID);
         RECT desktopRect = pRender->GetPresentRect();
         SetWindowPos(hwnd, nullptr, desktopRect.left, desktopRect.top,
             desktopRect.right - desktopRect.left, desktopRect.bottom - desktopRect.top,
             SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-        pRender->Initialize(hwnd);
+        if (FAILED(pRender->Initialize(hwnd)))
+        {
+            // The display path can remain unavailable briefly after a mode
+            // switch. Retry without rendering partially initialized resources.
+            SetTimer(hwnd, DISPLAY_CHANGE_TIMER_ID, 1000, nullptr);
+        }
     }
     return 0;
 
@@ -145,4 +166,3 @@ LRESULT CALLBACK PresentWindow::WndProc(HWND hwnd, UINT message, WPARAM wParam, 
 
     return DefWindowProc(hwnd, message, wParam, lParam);
 }
-

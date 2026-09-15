@@ -147,7 +147,7 @@ bool ReadSettings(AppSettings& settings)
 
     // read config file
     inipp::Ini<char> ini;
-    std::ifstream is(GetCurrentConfigFilePath());
+    std::ifstream is{ std::filesystem::path(GetCurrentConfigFilePath()) };
     ini.parse(is);
     ini.strip_trailing_comments();
 
@@ -172,7 +172,7 @@ bool ReadSettings(AppSettings& settings)
     bool stretched = DEFAULT_STRETCHED;
     inipp::get_value(ini.sections["Game"], "Stretched", stretched);
 
-    float stretchFactor = DEFAULT_STRETCHED;
+    float stretchFactor = DEFAULT_STRETCH_FACTOR;
     if (!inipp::get_value(ini.sections["Game"], "StretchFactor", stretchFactor))
     {
         // for backward compatibility, if StretchFactor is missing, set it to 2.0f when Stretched is true, otherwise 1.0f
@@ -344,7 +344,7 @@ void SaveSettings(AppSettings& settings)
 {
     // config file
     inipp::Ini<char> ini;
-    std::ifstream is(GetCurrentConfigFilePath());
+    std::ifstream is{ std::filesystem::path(GetCurrentConfigFilePath()) };
     ini.parse(is);
     ini.strip_trailing_comments();
 
@@ -389,7 +389,7 @@ void SaveSettings(AppSettings& settings)
 
     is.close();
 
-    std::ofstream os(GetCurrentConfigFilePath());
+    std::ofstream os{ std::filesystem::path(GetCurrentConfigFilePath()) };
     ini.generate(os);
     os.close();
 }

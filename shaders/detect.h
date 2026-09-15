@@ -5,17 +5,36 @@
 #include <memory>
 #include <vector>
 #include "dxgi1_6.h"
+#include "barStabilizer.h"
 
 using namespace DirectX;
 
 class Detection
 {
 public:
+    enum class LumaEncoding
+    {
+        SDR,
+        HDR10,
+        SCRGB
+    };
+
+    static constexpr LumaEncoding GetLumaEncoding(DXGI_FORMAT format, DXGI_COLOR_SPACE_TYPE colorSpace)
+    {
+        if (format == DXGI_FORMAT_R16G16B16A16_FLOAT)
+            return LumaEncoding::SCRGB;
+        if (format == DXGI_FORMAT_R10G10B10A2_UNORM &&
+            colorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020)
+            return LumaEncoding::HDR10;
+        return LumaEncoding::SDR;
+    }
+
     Detection();
     ~Detection();
 
     HRESULT Initialize(ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceContext> context, UINT width, UINT height,
-        float blackThreshold, float blackRatio, bool symmetricBars, UINT reservedWidth, UINT reservedHeight, DXGI_COLOR_SPACE_TYPE colorSpace);
+        float blackThreshold, float blackRatio, bool symmetricBars, UINT reservedWidth, UINT reservedHeight,
+        DXGI_FORMAT format, DXGI_COLOR_SPACE_TYPE colorSpace);
     
     HRESULT Detect(ID3D11DeviceContext* context, TextureView target);
     HRESULT RenderLumaMask(ID3D11DeviceContext* context, TextureView target);
@@ -69,8 +88,11 @@ private:
     // detected black bar sizes
     UINT m_topBar, m_bottomBar;
     UINT m_leftBar, m_rightBar;
+    BarStabilizer m_topStabilizer, m_bottomStabilizer;
+    BarStabilizer m_leftStabilizer, m_rightStabilizer;
     UINT m_reservedWidth;
     UINT m_reservedHeight;
 
     DXGI_COLOR_SPACE_TYPE m_colorSpace;
+    LumaEncoding m_lumaEncoding = LumaEncoding::SDR;
 };

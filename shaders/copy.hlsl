@@ -51,7 +51,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
     // Final UV within the source texture
     float2 finalUV = srcUVStart + (uv * srcUVSize);
 
-    // 6. Sample with bilinear interpolation and blend with the previous frame
     float4 current = gInput.SampleLevel(samLinear, finalUV, 0);
     [branch]
     if (blend >= 1.0f)

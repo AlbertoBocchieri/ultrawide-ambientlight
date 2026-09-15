@@ -18,8 +18,7 @@ using namespace DirectX;
 #define SDR_LUMA_THRESHOLD 0.01f
 #define HDR10_LUMA_THRESHOLD 0.0001f
 
-__declspec(align(16))
-struct DetectionParams {
+struct alignas(16) DetectionParams {
     UINT  Width;
     UINT  Height;
     float BlackThreshold;
@@ -29,8 +28,8 @@ struct DetectionParams {
 };
 
 Detection::Detection()
-    : m_width(0), m_height(0),
-    m_blackThreshold(0.0f), m_blackRatio(0.0f), m_symmetricBars(false),
+    : m_blackThreshold(0.0f), m_blackVariance(0.0f), m_blackRatio(0.0f),
+    m_symmetricBars(false), m_width(0), m_height(0),
     m_topBar(0), m_bottomBar(0), m_leftBar(0), m_rightBar(0),
     m_reservedWidth(0), m_reservedHeight(0),
     m_colorSpace(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
@@ -45,7 +44,7 @@ HRESULT Detection::Initialize(ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceCo
     UINT width, UINT height,
     float blackThreshold, float blackRatio, bool symmetricBars,
     UINT reservedWidth, UINT reservedHeight,
-    DXGI_COLOR_SPACE_TYPE colorSpace)
+    DXGI_FORMAT format, DXGI_COLOR_SPACE_TYPE colorSpace)
 {
     HRESULT hr = S_OK;
     if (m_device != device)
@@ -87,22 +86,29 @@ HRESULT Detection::Initialize(ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceCo
     }
 
 
-    if (m_width != width || m_height != height)
+    LumaEncoding newEncoding = GetLumaEncoding(format, colorSpace);
+    if (m_width != width || m_height != height || m_lumaEncoding != newEncoding)
     {
         m_width = width;
         m_height = height;
         m_topBar = 0;
-        m_bottomBar = m_height;
+        m_bottomBar = 0;
         m_leftBar = 0;
-        m_rightBar = m_width;
+        m_rightBar = 0;
+        m_topStabilizer.Reset();
+        m_bottomStabilizer.Reset();
+        m_leftStabilizer.Reset();
+        m_rightStabilizer.Reset();
 
-        CreateBuffers();
+        hr = CreateBuffers();
+        RETURN_IF_FAILED(hr);
     }
 
     m_blackRatio = blackRatio;
     m_symmetricBars = symmetricBars;
 
     m_colorSpace = colorSpace;
+    m_lumaEncoding = newEncoding;
 
     // maximum threshold for black detection
     // blackThreshold is user setting between 0.0 and 1.0
@@ -110,11 +116,14 @@ HRESULT Detection::Initialize(ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceCo
     m_blackVariance = 1e-6f;
 
     // Adjust threshold for HDR10 PQ content
-    switch (m_colorSpace)
+    switch (m_lumaEncoding)
     {
-    case DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020:
+    case LumaEncoding::HDR10:
         m_blackThreshold = blackThreshold * HDR10_LUMA_THRESHOLD;
         m_blackVariance = 1e-10f;
+        break;
+    case LumaEncoding::SDR:
+    case LumaEncoding::SCRGB:
         break;
     }
 
@@ -132,7 +141,6 @@ HRESULT Detection::Initialize(ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceCo
     if (reservedWidth > 0 && reservedHeight > 0)
     {
         float reservedAspect = (float)reservedWidth / (float)reservedHeight;
-        float windowAspect = (float)m_width / (float)m_height;
 
         m_reservedHeight = (UINT)m_height;
         m_reservedWidth = (UINT)std::round((float)m_reservedHeight * reservedAspect);
@@ -171,13 +179,14 @@ HRESULT Detection::CreateBuffers()
     hr = m_device->CreateTexture2D(&textureDesc, nullptr, &tex);
     RETURN_IF_FAILED(hr);
 
-    m_luma.CreateViews(m_device.Get(), tex.Get(), false, true, true);
+    hr = m_luma.CreateViews(m_device.Get(), tex.Get(), false, true, true);
+    RETURN_IF_FAILED(hr);
 
     // Staging texture
     textureDesc.Usage = D3D11_USAGE_STAGING;
     textureDesc.BindFlags = 0;
     textureDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    m_device->CreateTexture2D(&textureDesc, nullptr, &tex);
+    hr = m_device->CreateTexture2D(&textureDesc, nullptr, &tex);
     RETURN_IF_FAILED(hr);
 
     m_lumaStaging = tex;
@@ -275,7 +284,7 @@ HRESULT Detection::DispatchRowColAnalysis(ID3D11DeviceContext* context)
     ID3D11ShaderResourceView* nullSRV = nullptr;
     context->CSSetShaderResources(1, 1, &nullSRV);
     ID3D11Buffer* nullBuffer = nullptr;
-    context->CSSetConstantBuffers(1, 1, &nullBuffer);
+    context->CSSetConstantBuffers(0, 1, &nullBuffer);
 
     context->CopyResource(m_rowStaging.Get(), m_rowResults.Get());
     context->CopyResource(m_colStaging.Get(), m_colResults.Get());
@@ -339,7 +348,8 @@ HRESULT Detection::Detect(ID3D11DeviceContext* context, TextureView target)
     context->CopyResource(m_lumaStaging.Get(), m_luma.GetTexture());
 
     D3D11_MAPPED_SUBRESOURCE mappedLuma = {};
-    context->Map(m_lumaStaging.Get(), 0, D3D11_MAP_READ, 0, &mappedLuma);
+    hr = context->Map(m_lumaStaging.Get(), 0, D3D11_MAP_READ, 0, &mappedLuma);
+    RETURN_IF_FAILED(hr);
 
     const float* luma = reinterpret_cast<const float*>(mappedLuma.pData);
     const UINT pitch = mappedLuma.RowPitch / sizeof(float);
@@ -350,19 +360,19 @@ HRESULT Detection::Detect(ID3D11DeviceContext* context, TextureView target)
 
     m_topBar = FindBarSizeCenterOut(luma, pitch, m_width, m_height,
         true, vCenter, -1, 0,
-        blackThreshold, m_blackRatio, blackVariance, minBarSize);
+        m_blackThreshold, m_blackRatio, m_blackVariance, minBarSize);
 
     m_bottomBar = FindBarSizeCenterOut(luma, pitch, m_width, m_height,
         true, vCenter, 1, m_height - 1,
-        blackThreshold, m_blackRatio, blackVariance, minBarSize);
+        m_blackThreshold, m_blackRatio, m_blackVariance, minBarSize);
 
     m_leftBar = FindBarSizeCenterOut(luma, pitch, m_width, m_height,
         false, hCenter, -1, 0,
-        blackThreshold, m_blackRatio, blackVariance, minBarSize);
+        m_blackThreshold, m_blackRatio, m_blackVariance, minBarSize);
 
     m_rightBar = FindBarSizeCenterOut(luma, pitch, m_width, m_height,
         false, hCenter, 1, m_width - 1,
-        blackThreshold, m_blackRatio, blackVariance, minBarSize);
+        m_blackThreshold, m_blackRatio, m_blackVariance, minBarSize);
 
     context->Unmap(m_lumaStaging.Get(), 0);
 #endif
@@ -372,10 +382,10 @@ HRESULT Detection::Detect(ID3D11DeviceContext* context, TextureView target)
 
     if (m_symmetricBars)
     {
-        UINT verticalBarSize = min(m_topBar, m_bottomBar);
+        UINT verticalBarSize = std::min(m_topBar, m_bottomBar);
         m_topBar = verticalBarSize;
         m_bottomBar = verticalBarSize;
-        UINT horizontalBarSize = min(m_leftBar, m_rightBar);
+        UINT horizontalBarSize = std::min(m_leftBar, m_rightBar);
         m_leftBar = horizontalBarSize;
         m_rightBar = horizontalBarSize;
     }
@@ -390,6 +400,11 @@ HRESULT Detection::Detect(ID3D11DeviceContext* context, TextureView target)
     if (m_bottomBar >= m_height / 2 - 16)
         m_bottomBar = 0;
 
+    m_topBar = m_topStabilizer.Update(m_topBar);
+    m_bottomBar = m_bottomStabilizer.Update(m_bottomBar);
+    m_leftBar = m_leftStabilizer.Update(m_leftBar);
+    m_rightBar = m_rightStabilizer.Update(m_rightBar);
+
     return hr;
 }
 
@@ -403,30 +418,17 @@ HRESULT Detection::DispatchLuma(ID3D11DeviceContext* context, TextureView target
 
     target.GetTexture()->GetDesc(&target_desc);
 
-    // Set the shader
-    switch (target_desc.Format)
+    // The resource format determines its encoding. In particular, FP16 desktop
+    // duplication surfaces are linear scRGB even on a PQ-capable HDR output.
+    switch (GetLumaEncoding(target_desc.Format, m_colorSpace))
     {
-    case DXGI_FORMAT_R10G10B10A2_UNORM:
-        if (m_colorSpace == DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
-        {
-            context->CSSetShader(m_lumaShader.Get(), nullptr, 0);
-        }
-        else
-        {
-            context->CSSetShader(m_lumaHDR10Shader.Get(), nullptr, 0);
-        }
+    case LumaEncoding::HDR10:
+        context->CSSetShader(m_lumaHDR10Shader.Get(), nullptr, 0);
         break;
-    case DXGI_FORMAT_R16G16B16A16_FLOAT:
-        if (m_colorSpace == DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
-        {
-            context->CSSetShader(m_lumaSCRGBShader.Get(), nullptr, 0);
-        }
-        else
-        {
-            context->CSSetShader(m_lumaHDR10Shader.Get(), nullptr, 0);
-        }
+    case LumaEncoding::SCRGB:
+        context->CSSetShader(m_lumaSCRGBShader.Get(), nullptr, 0);
         break;
-    default:
+    case LumaEncoding::SDR:
         context->CSSetShader(m_lumaShader.Get(), nullptr, 0);
         break;
     }
@@ -462,6 +464,9 @@ HRESULT Detection::RenderLumaMask(ID3D11DeviceContext* context, TextureView targ
 {
     HRESULT hr = S_OK;
 
+    if (!context || !m_constants || !m_luma.GetSRV() || !target.GetTexture() || !target.GetUAV())
+        return E_FAIL;
+
     D3D11_TEXTURE2D_DESC target_desc = {};
     target.GetTexture()->GetDesc(&target_desc);
 
@@ -482,13 +487,6 @@ HRESULT Detection::RenderLumaMask(ID3D11DeviceContext* context, TextureView targ
     ID3D11UnorderedAccessView* uav = target.GetUAV();
     context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
 
-    DetectionParams params = {};
-    params.Width = m_width;
-    params.Height = m_height;
-    params.BlackThreshold = m_blackThreshold;
-    params.BlackRatio = m_blackRatio;
-    params.VarianceThreshold = m_blackVariance;
-
     context->CSSetConstantBuffers(0, 1, m_constants.GetAddressOf());
 
     context->Dispatch(
@@ -501,7 +499,7 @@ HRESULT Detection::RenderLumaMask(ID3D11DeviceContext* context, TextureView targ
     srv = nullptr;
     context->CSSetShaderResources(0, 1, &srv);
     ID3D11Buffer* nullBuffer = nullptr;
-    context->CSSetConstantBuffers(1, 1, &nullBuffer);
+    context->CSSetConstantBuffers(0, 1, &nullBuffer);
 
     return hr;
 }
@@ -584,8 +582,8 @@ std::vector<BlackBar> Detection::GetDetectedBars()
         if (m_reservedWidth > 0)
         {
             UINT maxBarWidth = (m_width - m_reservedWidth) / 2;
-            left = min(left, maxBarWidth);
-            right = min(right, maxBarWidth);
+            left = std::min(left, maxBarWidth);
+            right = std::min(right, maxBarWidth);
         }
 
         BlackBar leftBar = {};
@@ -624,8 +622,8 @@ std::vector<BlackBar> Detection::GetDetectedBars()
         if (m_reservedHeight > 0)
         {
             UINT maxBarHeight = (m_height - m_reservedHeight) / 2;
-            top = min(top, maxBarHeight);
-            bottom = min(bottom, maxBarHeight);
+            top = std::min(top, maxBarHeight);
+            bottom = std::min(bottom, maxBarHeight);
         }
 
         BlackBar topBar = {};

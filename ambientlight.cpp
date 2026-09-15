@@ -5,6 +5,7 @@
 #include "ui.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 
 #pragma comment(lib, "d3d11.lib")
@@ -31,30 +32,65 @@ D3D11_BOX GetMirroredBox(D3D11_BOX box, UINT width, UINT height)
     return mirrored;
 }
 
+static HRESULT FindAdapterForMonitor(IDXGIFactory1* factory, HMONITOR monitor, ComPtr<IDXGIAdapter1>& result)
+{
+    if (!factory || !monitor)
+        return E_INVALIDARG;
+
+    for (UINT adapterIndex = 0; ; ++adapterIndex)
+    {
+        ComPtr<IDXGIAdapter1> adapter;
+        HRESULT hr = factory->EnumAdapters1(adapterIndex, &adapter);
+        if (hr == DXGI_ERROR_NOT_FOUND)
+            return hr;
+        RETURN_IF_FAILED(hr);
+
+        for (UINT outputIndex = 0; ; ++outputIndex)
+        {
+            ComPtr<IDXGIOutput> output;
+            hr = adapter->EnumOutputs(outputIndex, &output);
+            if (hr == DXGI_ERROR_NOT_FOUND)
+                break;
+            RETURN_IF_FAILED(hr);
+
+            DXGI_OUTPUT_DESC desc = {};
+            hr = output->GetDesc(&desc);
+            RETURN_IF_FAILED(hr);
+            if (desc.Monitor == monitor)
+            {
+                result = adapter;
+                return S_OK;
+            }
+        }
+    }
+}
+
 AmbientLight::AmbientLight()
-    : m_effectRendered(false),
-    m_zoomRendered(false),
+    : m_hwnd(nullptr),
+    m_resetUiPosition(false),
+    m_ready(false),
+    m_effectRendered(false),
     m_presented(false),
+    m_zoomRendered(false),
     m_gameWidth(0),
     m_gameHeight(0),
     m_windowWidth(0),
     m_windowHeight(0),
     m_effectZoom(0),
     m_frameRate(60),
-    m_hwnd(nullptr),
     m_lastPresentTime(0),
     m_perfFreq(0),
     m_showConfigWindow(false),
-    m_clearConfigWindow(false),
-    m_resetUiPosition(false),
-    m_ready(false)
+    m_clearConfigWindow(false)
 {
     m_dirtyRects[0] = { 0, 0, 0, 0 };
     m_dirtyRects[1] = { 0, 0, 0, 0 };
+    timeBeginPeriod(1);
 }
 
 AmbientLight::~AmbientLight()
 {
+    timeEndPeriod(1);
 }
 
 LRESULT AmbientLight::WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -91,39 +127,43 @@ RECT AmbientLight::GetPresentRect()
     return GetDisplayRect(m_settings.display);
 }
 
-void AmbientLight::UpdateSettings()
+HRESULT AmbientLight::UpdateSettings()
 {
     ValidateSettings();
 
     if (m_hwnd)
     {
+        HRESULT hr = S_OK;
         //m_blurPre.Initialize(m_device,
         //    m_deferred,
         //    m_gameWidth,
         //    m_gameHeight,
         //    m_settings.blurSamples);
 
-        UINT mipWidth = max(1u, m_gameWidth >> m_settings.mipmapLevels);
-        UINT mipHeight = max(1u, m_gameHeight >> m_settings.mipmapLevels);
-        m_blurDownscale.Initialize(m_device,
+        UINT mipWidth = std::max(1u, m_gameWidth >> m_settings.mipmapLevels);
+        UINT mipHeight = std::max(1u, m_gameHeight >> m_settings.mipmapLevels);
+        hr = m_blurDownscale.Initialize(m_device,
             m_deferred,
             mipWidth,
             mipHeight,
             m_settings.blurSamples);
+        RETURN_IF_FAILED(hr);
 
         float windowAspect = (float)m_windowWidth / (float)m_windowHeight;
-        m_vignette.Initialize(m_device,
+        hr = m_vignette.Initialize(m_device,
             m_deferred,
             m_settings.vignetteIntensity,
             m_settings.vignetteRadius,
             m_settings.vignetteSmoothness,
             windowAspect);
+        RETURN_IF_FAILED(hr);
 
         auto df = GetDesktopFormat();
-        CreateOffscreen(df.format);
+        hr = CreateOffscreen(df.format, df.outputFormat);
+        RETURN_IF_FAILED(hr);
 
         DXGI_COLOR_SPACE_TYPE colorSpace = df.colorSpace;
-        m_detection.Initialize(m_device,
+        hr = m_detection.Initialize(m_device,
             m_immediate,
             m_windowWidth,
             m_windowHeight,
@@ -132,16 +172,18 @@ void AmbientLight::UpdateSettings()
             m_settings.autoDetectionSymmetricBars,
             m_settings.autoDetectionReservedArea ? m_settings.autoDetectionReservedWidth : 0,
             m_settings.autoDetectionReservedArea ? m_settings.autoDetectionReservedHeight : 0,
+            df.format,
             colorSpace);
+        RETURN_IF_FAILED(hr);
 
         InitUI(m_hwnd, m_device.Get(), m_deferred.Get(), m_settings);
     }
+
+    return S_OK;
 }
 
 void AmbientLight::ValidateSettings()
 {
-    m_settings.transitionTimeMs = std::clamp(m_settings.transitionTimeMs, 0, 5000);
-
     if (m_settings.loaded && m_settings.useAutoDetection)
     {
         m_blackBars = m_detection.GetDetectedBars();
@@ -183,7 +225,10 @@ void AmbientLight::ValidateSettings()
 
     // Validate blur settings
     m_settings.blurPasses = std::clamp(m_settings.blurPasses, 0u, 128u);
-    m_settings.mipmapLevels = std::clamp(m_settings.mipmapLevels, 0u, 12u);
+    UINT maxMipLevel = m_gameWidth || m_gameHeight
+        ? static_cast<UINT>(std::bit_width(std::max(m_gameWidth, m_gameHeight)) - 1)
+        : 0;
+    m_settings.mipmapLevels = std::min(m_settings.mipmapLevels, std::min(12u, maxMipLevel));
     m_settings.blurSamples = std::clamp(m_settings.blurSamples / 2 * 2 + 1, 1u, 63u);
 
     // Validate vignette settings
@@ -191,9 +236,28 @@ void AmbientLight::ValidateSettings()
     m_settings.vignetteRadius = std::clamp(m_settings.vignetteRadius, 0.0f, 1.0f);
     m_settings.vignetteSmoothness = std::clamp(m_settings.vignetteSmoothness, 0.0f, 1.0f);
 
+    if (!std::isfinite(m_settings.stretchFactor))
+        m_settings.stretchFactor = DEFAULT_STRETCH_FACTOR;
+    m_settings.stretchFactor = std::clamp(m_settings.stretchFactor, 0.1f, 5.0f);
+
+    if (!std::isfinite(m_settings.autoDetectionBrightnessThreshold))
+        m_settings.autoDetectionBrightnessThreshold = DEFAULT_AUTO_DETECTION_BRIGHTNESS_THRESHOLD;
+    m_settings.autoDetectionBrightnessThreshold = std::clamp(m_settings.autoDetectionBrightnessThreshold, 0.01f, 1.0f);
+
+    if (!std::isfinite(m_settings.autoDetectionBlackRatio))
+        m_settings.autoDetectionBlackRatio = DEFAULT_AUTO_DETECTION_BLACK_RATIO;
+    m_settings.autoDetectionBlackRatio = std::clamp(m_settings.autoDetectionBlackRatio, 0.01f, 1.0f);
+    m_settings.autoDetectionTime = std::clamp(m_settings.autoDetectionTime, 1, 3000);
+
+    if (!std::isfinite(m_settings.uiScale))
+        m_settings.uiScale = DEFAULT_UI_SCALE;
+    m_settings.uiScale = std::clamp(m_settings.uiScale, 0.5f, 3.0f);
+
     // Validate frame rate
     m_settings.frameRate = std::clamp(m_settings.frameRate, 10u, 1000u);
     m_frameRate = m_settings.frameRate;
+
+    m_settings.transitionTimeMs = std::clamp(m_settings.transitionTimeMs, 0, 5000);
 
     // Validate zoom
     m_settings.zoom = std::clamp(m_settings.zoom, 0u, 16u);
@@ -204,12 +268,18 @@ AmbientLight::DesktopFormat AmbientLight::GetDesktopFormat()
 {
     AmbientLight::DesktopFormat f = {
         DXGI_FORMAT_B8G8R8A8_UNORM,
+        DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
+        DXGI_FORMAT_B8G8R8A8_UNORM,
         DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709
     };
     if (m_settings.hdrSupport)
     {
         f.format = m_capture.GetDesktopDesc().ModeDesc.Format;
         f.colorSpace = m_capture.GetOutputDesc1().ColorSpace;
+        // DirectComposition needs alpha blending. FP16 scRGB is the universal
+        // Advanced Color path for that scenario and avoids ambiguous RGB10 PQ.
+        f.outputFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        f.outputColorSpace = DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
     }
 
     return f;
@@ -218,6 +288,7 @@ AmbientLight::DesktopFormat AmbientLight::GetDesktopFormat()
 HRESULT AmbientLight::Initialize(HWND hwnd)
 {
     m_ready = false;
+    m_capture.ReleaseFrame();
 
     m_hwnd = hwnd;
 
@@ -229,27 +300,11 @@ HRESULT AmbientLight::Initialize(HWND hwnd)
     m_resetUiPosition = true;
 
     QueryPerformanceFrequency((LARGE_INTEGER*)&m_perfFreq);
-    timeBeginPeriod(1);
 
-    // create device
-    D3D_FEATURE_LEVEL featureLevels[] = { D3D_FEATURE_LEVEL_11_0 };
-    D3D_FEATURE_LEVEL featureLevel;
-    UINT creationFlags = 0;
-#if defined(_DEBUG)
-    // If the project is in a debug build, enable the debug layer.
-    creationFlags |= D3D11_CREATE_DEVICE_DEBUG;
-#endif
-    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, creationFlags, featureLevels, 1, D3D11_SDK_VERSION, &m_device, &featureLevel, &m_immediate);
-    RETURN_IF_FAILED(hr);
-
-    m_device->CreateDeferredContext(0, &m_deferred);
-
-    ComPtr<IDXGIDevice> dxgiDevice;
-    hr = m_device.As(&dxgiDevice);
-    RETURN_IF_FAILED(hr);
-
+    HRESULT hr = S_OK;
     ComPtr<IDXGIFactory2> dxgiFactory2;
     hr = CreateDXGIFactory2(0, __uuidof(IDXGIFactory2), &dxgiFactory2);
+    RETURN_IF_FAILED(hr);
 
     RECT windowRect = { 0 };
     GetWindowRect(hwnd, &windowRect);
@@ -257,7 +312,51 @@ HRESULT AmbientLight::Initialize(HWND hwnd)
     m_windowHeight = RECT_HEIGHT(windowRect);
 
     HMONITOR monitor = GetDisplayMonitor(m_settings.display);
+    ComPtr<IDXGIAdapter1> targetAdapter;
+    hr = FindAdapterForMonitor(dxgiFactory2.Get(), monitor, targetAdapter);
+    RETURN_IF_FAILED(hr);
+
+    bool deviceChanged = !m_device || FAILED(m_device->GetDeviceRemovedReason());
+    if (!deviceChanged)
+    {
+        ComPtr<IDXGIDevice> currentDxgiDevice;
+        ComPtr<IDXGIAdapter> currentAdapter;
+        DXGI_ADAPTER_DESC currentDesc = {};
+        DXGI_ADAPTER_DESC1 targetDesc = {};
+        hr = m_device.As(&currentDxgiDevice);
+        RETURN_IF_FAILED(hr);
+        hr = currentDxgiDevice->GetAdapter(&currentAdapter);
+        RETURN_IF_FAILED(hr);
+        hr = currentAdapter->GetDesc(&currentDesc);
+        RETURN_IF_FAILED(hr);
+        hr = targetAdapter->GetDesc1(&targetDesc);
+        RETURN_IF_FAILED(hr);
+        deviceChanged = currentDesc.AdapterLuid.HighPart != targetDesc.AdapterLuid.HighPart ||
+            currentDesc.AdapterLuid.LowPart != targetDesc.AdapterLuid.LowPart;
+    }
+
+    if (deviceChanged)
+    {
+        D3D_FEATURE_LEVEL featureLevels[] = { D3D_FEATURE_LEVEL_11_0 };
+        D3D_FEATURE_LEVEL featureLevel;
+        UINT creationFlags = 0;
+#if defined(_DEBUG)
+        creationFlags |= D3D11_CREATE_DEVICE_DEBUG;
+#endif
+        hr = D3D11CreateDevice(targetAdapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, creationFlags,
+            featureLevels, 1, D3D11_SDK_VERSION, &m_device, &featureLevel, &m_immediate);
+        RETURN_IF_FAILED(hr);
+
+        hr = m_device->CreateDeferredContext(0, &m_deferred);
+        RETURN_IF_FAILED(hr);
+    }
+
+    ComPtr<IDXGIDevice> dxgiDevice;
+    hr = m_device.As(&dxgiDevice);
+    RETURN_IF_FAILED(hr);
+
     hr = m_capture.Initialize(m_device, monitor, m_settings.hdrSupport);
+    RETURN_IF_FAILED(hr);
 
     // create swap chain
     auto df = GetDesktopFormat();
@@ -265,7 +364,7 @@ HRESULT AmbientLight::Initialize(HWND hwnd)
     DXGI_SWAP_CHAIN_DESC1 scd = {};
     scd.Width = m_windowWidth;
     scd.Height = m_windowHeight;
-    scd.Format = df.format;
+    scd.Format = df.outputFormat;
     scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     scd.BufferCount = 2;
     scd.SampleDesc.Count = 1;
@@ -274,69 +373,102 @@ HRESULT AmbientLight::Initialize(HWND hwnd)
     scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
     scd.Scaling = DXGI_SCALING_STRETCH;
 
-    hr = dxgiFactory2->CreateSwapChainForComposition(m_device.Get(), &scd, nullptr, &m_swapchain);
+    DXGI_SWAP_CHAIN_DESC1 currentScd = {};
+    bool recreateSwapChain = deviceChanged || !m_swapchain ||
+        FAILED(m_swapchain->GetDesc1(&currentScd)) ||
+        currentScd.Width != scd.Width || currentScd.Height != scd.Height || currentScd.Format != scd.Format;
+
+    if (recreateSwapChain)
+    {
+        ComPtr<IDXGISwapChain1> newSwapchain;
+        hr = dxgiFactory2->CreateSwapChainForComposition(m_device.Get(), &scd, nullptr, &newSwapchain);
+        RETURN_IF_FAILED(hr);
+
+        if (deviceChanged || !m_dcompDevice)
+        {
+            hr = DCompositionCreateDevice(dxgiDevice.Get(), __uuidof(IDCompositionDevice), &m_dcompDevice);
+            RETURN_IF_FAILED(hr);
+            hr = m_dcompDevice->CreateTargetForHwnd(m_hwnd, TRUE, &m_dcompTarget);
+            RETURN_IF_FAILED(hr);
+            hr = m_dcompDevice->CreateVisual(&m_dcompVisual);
+            RETURN_IF_FAILED(hr);
+            hr = m_dcompTarget->SetRoot(m_dcompVisual.Get());
+            RETURN_IF_FAILED(hr);
+        }
+
+        hr = m_dcompVisual->SetContent(newSwapchain.Get());
+        RETURN_IF_FAILED(hr);
+        hr = m_dcompDevice->Commit();
+        RETURN_IF_FAILED(hr);
+        m_swapchain = newSwapchain;
+    }
+
+    ComPtr<IDXGISwapChain3> swapchain3;
+    hr = m_swapchain.As(&swapchain3);
+    RETURN_IF_FAILED(hr);
+    UINT colorSpaceSupport = 0;
+    hr = swapchain3->CheckColorSpaceSupport(df.outputColorSpace, &colorSpaceSupport);
+    RETURN_IF_FAILED(hr);
+    if ((colorSpaceSupport & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT) == 0)
+        return DXGI_ERROR_UNSUPPORTED;
+    hr = swapchain3->SetColorSpace1(df.outputColorSpace);
     RETURN_IF_FAILED(hr);
 
-    hr = DCompositionCreateDevice(dxgiDevice.Get(), __uuidof(IDCompositionDevice), &m_dcompDevice);
+    hr = m_copy.Initialize(m_device, m_deferred.Get());
     RETURN_IF_FAILED(hr);
 
-    hr = m_dcompDevice->CreateTargetForHwnd(m_hwnd, TRUE, &m_dcompTarget);
-    RETURN_IF_FAILED(hr);
+    if (deviceChanged)
+    {
+        m_gameTexture.Clear();
+        m_downsampledTexture.Clear();
+        m_temporalTextures[0].Clear();
+        m_temporalTextures[1].Clear();
+        m_processedBlurTexture.Clear();
+        m_effectCanvasTexture.Clear();
+    }
 
-    hr = m_dcompDevice->CreateVisual(&m_dcompVisual);
-    RETURN_IF_FAILED(hr);
-
-    hr = m_dcompVisual->SetContent(m_swapchain.Get());
-    RETURN_IF_FAILED(hr);
-
-    hr = m_dcompTarget->SetRoot(m_dcompVisual.Get());
-    RETURN_IF_FAILED(hr);
-
-    hr = m_dcompDevice->Commit();
+    hr = UpdateSettings();
     RETURN_IF_FAILED(hr);
 
     m_ready = true;
 
-    m_copy.Initialize(m_device, m_deferred.Get());
-
-    m_gameTexture.Clear();
-    m_downsampledTexture.Clear();
-    m_temporalTextures[0].Clear();
-    m_temporalTextures[1].Clear();
-    m_processedBlurTexture.Clear();
-    m_effectCanvasTexture.Clear();
-
-    UpdateSettings();
-
-    return 0;
+    return S_OK;
 }
 
-HRESULT AmbientLight::CreateOffscreen(DXGI_FORMAT format)
+HRESULT AmbientLight::CreateOffscreen(DXGI_FORMAT captureFormat, DXGI_FORMAT outputFormat)
 {
     HRESULT hr = S_OK;
     // Create with full mip chain (0) and enable mip generation support
-    m_gameTexture.RecreateTexture(m_device.Get(), format, m_gameWidth, m_gameHeight, 0, true);
+    hr = m_gameTexture.RecreateTexture(m_device.Get(), captureFormat, m_gameWidth, m_gameHeight, 0, true);
+    RETURN_IF_FAILED(hr);
 
     // m_downsampledTexture now matches the selected mip level size
-    UINT mipWidth = max(1u, m_gameWidth >> m_settings.mipmapLevels);
-    UINT mipHeight = max(1u, m_gameHeight >> m_settings.mipmapLevels);
-    m_downsampledTexture.RecreateTexture(m_device.Get(), format,
+    UINT mipWidth = std::max(1u, m_gameWidth >> m_settings.mipmapLevels);
+    UINT mipHeight = std::max(1u, m_gameHeight >> m_settings.mipmapLevels);
+    hr = m_downsampledTexture.RecreateTexture(m_device.Get(), captureFormat,
         mipWidth,
         mipHeight);
+    RETURN_IF_FAILED(hr);
 
-    m_temporalTextures[0].RecreateTexture(m_device.Get(), format, mipWidth, mipHeight);
-    m_temporalTextures[1].RecreateTexture(m_device.Get(), format, mipWidth, mipHeight);
+    for (auto& texture : m_temporalTextures)
+    {
+        hr = texture.RecreateTexture(m_device.Get(), captureFormat, mipWidth, mipHeight);
+        RETURN_IF_FAILED(hr);
+    }
+
+    hr = m_processedBlurTexture.RecreateTexture(m_device.Get(), captureFormat,
+        m_gameWidth,
+        m_gameHeight);
+    RETURN_IF_FAILED(hr);
+
+    hr = m_effectCanvasTexture.RecreateTexture(m_device.Get(), outputFormat,
+        m_windowWidth,
+        m_windowHeight);
+    RETURN_IF_FAILED(hr);
+
     m_temporalReady = false;
     m_lastTemporalTime = 0;
     m_temporalIndex = 0;
-
-    m_processedBlurTexture.RecreateTexture(m_device.Get(), format,
-        m_gameWidth,
-        m_gameHeight);
-
-    m_effectCanvasTexture.RecreateTexture(m_device.Get(), format,
-        m_windowWidth,
-        m_windowHeight);
 
     return hr;
 }
@@ -349,19 +481,26 @@ void AmbientLight::Render()
     ScopedPerfTimer frameTimer(m_framePerfTimer);
 
     {
-        m_capture.ReleaseFrame();
+        HRESULT hr = m_capture.ReleaseFrame();
+        HandleRuntimeError(hr);
         if (ShouldRenderEffect())
         {
             ScopedPerfTimer captureTimer(m_capturePerfTimer);
-            m_capture.Capture();
+            hr = m_capture.Capture();
+            if (FAILED(hr) && hr != DXGI_ERROR_WAIT_TIMEOUT)
+                HandleRuntimeError(hr);
         }
     }
+    if (!m_ready)
+        return;
 
     {
         ScopedPerfTimer renderTimer(m_renderPerfTimer);
         if (ShouldRenderEffect())
         {
             RenderEffects();
+            if (!m_ready)
+                return;
         }
         else
         {
@@ -371,8 +510,12 @@ void AmbientLight::Render()
         RenderConfig();
         RenderBackBuffer();
     }
+    if (!m_ready)
+        return;
 
     Present();
+    if (!m_ready)
+        return;
 
     {
         ScopedPerfTimer detectTimer(m_detectPerfTimer);
@@ -383,7 +526,11 @@ void AmbientLight::Render()
 
     bool changed = ReadSettings(m_settings);
     if (changed)
-        UpdateSettings();
+    {
+        HRESULT hr = UpdateSettings();
+        if (FAILED(hr))
+            m_ready = false;
+    }
 }
 
 bool AmbientLight::ShouldRenderEffect()
@@ -398,9 +545,13 @@ bool AmbientLight::RenderEffects()
         return false;
 
     ComPtr<IDXGISurface> surface;
-    desktopTexture.As(&surface);
+    HRESULT hr = desktopTexture.As(&surface);
+    if (FAILED(hr) || !surface)
+        return false;
     DXGI_SURFACE_DESC desc = {};
-    surface->GetDesc(&desc);
+    hr = surface->GetDesc(&desc);
+    if (FAILED(hr))
+        return false;
 
     if (m_blackBars.size() < 2)
         return false;
@@ -432,9 +583,6 @@ bool AmbientLight::RenderEffects()
     if (IS_BOX_EMPTY(game_box))
         return false;
 
-    auto df = GetDesktopFormat();
-
-    DXGI_FORMAT dupFormat = df.format;
     D3D11_TEXTURE2D_DESC gameDesc = {};
     m_gameTexture.GetTexture()->GetDesc(&gameDesc);
     //assert(gameDesc.Format == desc.Format);
@@ -449,7 +597,12 @@ bool AmbientLight::RenderEffects()
     // Extract the specific mip level to the secondary buffer for the final blur/stretch
     m_deferred->CopySubresourceRegion(m_downsampledTexture.GetTexture(), 0, 0, 0, 0, m_gameTexture.GetTexture(), m_settings.mipmapLevels, NULL);
 
-    m_blurDownscale.Render(m_deferred.Get(), m_downsampledTexture, m_settings.blurPasses);
+    hr = m_blurDownscale.Render(m_deferred.Get(), m_downsampledTexture, m_settings.blurPasses);
+    if (FAILED(hr))
+    {
+        HandleRuntimeError(hr);
+        return false;
+    }
 
     TextureView* effectSource = &m_downsampledTexture;
     if (m_settings.transitionTimeMs > 0)
@@ -466,8 +619,13 @@ bool AmbientLight::RenderEffects()
 
         const UINT nextIndex = m_temporalReady ? 1 - m_temporalIndex : 0;
         TextureView previous = m_temporalReady ? m_temporalTextures[m_temporalIndex] : TextureView();
-        m_copy.Render(m_deferred.Get(), m_temporalTextures[nextIndex], m_downsampledTexture,
+        hr = m_copy.Render(m_deferred.Get(), m_temporalTextures[nextIndex], m_downsampledTexture,
             Copy::FlipNone, blend, previous);
+        if (FAILED(hr))
+        {
+            HandleRuntimeError(hr);
+            return false;
+        }
         m_temporalIndex = nextIndex;
         effectSource = &m_temporalTextures[m_temporalIndex];
         m_temporalReady = true;
@@ -480,16 +638,21 @@ bool AmbientLight::RenderEffects()
         m_temporalIndex = 0;
     }
 
-    UINT mipWidth = max(1u, m_gameWidth >> m_settings.mipmapLevels);
-    UINT mipHeight = max(1u, m_gameHeight >> m_settings.mipmapLevels);
+    UINT mipWidth = std::max(1u, m_gameWidth >> m_settings.mipmapLevels);
+    UINT mipHeight = std::max(1u, m_gameHeight >> m_settings.mipmapLevels);
     if (mipWidth > m_effectZoom * 2 && mipHeight > m_effectZoom * 2)
     {
-        m_copy.Render(m_deferred.Get(), m_processedBlurTexture, 0, 0, m_gameWidth, m_gameHeight,
+        hr = m_copy.Render(m_deferred.Get(), m_processedBlurTexture, 0, 0, m_gameWidth, m_gameHeight,
             *effectSource, m_effectZoom, m_effectZoom, mipWidth - m_effectZoom * 2, mipHeight - m_effectZoom * 2);
     }
     else
     {
-        m_copy.Render(m_deferred.Get(), m_processedBlurTexture, *effectSource);
+        hr = m_copy.Render(m_deferred.Get(), m_processedBlurTexture, *effectSource);
+    }
+    if (FAILED(hr))
+    {
+        HandleRuntimeError(hr);
+        return false;
     }
 
     ID3D11RenderTargetView* rtv = m_effectCanvasTexture.GetRTV();
@@ -528,8 +691,13 @@ bool AmbientLight::RenderEffects()
             flip = (m_gameWidth == m_windowWidth) ? Copy::FlipVertical : Copy::FlipHorizontal;
         }
 
-        m_copy.Render(m_deferred.Get(), m_effectCanvasTexture, dst.left, dst.top, RECT_WIDTH(dst), RECT_HEIGHT(dst),
+        hr = m_copy.Render(m_deferred.Get(), m_effectCanvasTexture, dst.left, dst.top, RECT_WIDTH(dst), RECT_HEIGHT(dst),
             m_processedBlurTexture, src.left, src.top, RECT_WIDTH(src), RECT_HEIGHT(src), flip);
+        if (FAILED(hr))
+        {
+            HandleRuntimeError(hr);
+            return false;
+        }
     }
 
     m_effectRendered = true;
@@ -569,10 +737,16 @@ void AmbientLight::RenderConfig()
 void AmbientLight::RenderBackBuffer()
 {
     ComPtr<ID3D11Texture2D> backBuffer;
-    m_swapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), &backBuffer);
+    HRESULT hr = m_swapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), &backBuffer);
+    if (FAILED(hr))
+    {
+        HandleRuntimeError(hr);
+        return;
+    }
 
     TextureView backview;
-    backview.CreateViews(m_device.Get(), backBuffer.Get(), true, false, false);
+    if (FAILED(backview.CreateViews(m_device.Get(), backBuffer.Get(), true, false, false)))
+        return;
 
     ID3D11RenderTargetView* rtv_back = backview.GetRTV();
     float color[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -581,10 +755,24 @@ void AmbientLight::RenderBackBuffer()
     if (m_effectRendered)
     {
         if (m_settings.vignetteEnabled)
-            m_vignette.Render(m_deferred.Get(), m_effectCanvasTexture);
+        {
+            hr = m_vignette.Render(m_deferred.Get(), m_effectCanvasTexture);
+            if (FAILED(hr))
+            {
+                HandleRuntimeError(hr);
+                return;
+            }
+        }
 
         if (m_settings.useAutoDetection && m_settings.autoDetectionLightMask)
-            m_detection.RenderLumaMask(m_deferred.Get(), m_effectCanvasTexture);
+        {
+            hr = m_detection.RenderLumaMask(m_deferred.Get(), m_effectCanvasTexture);
+            if (FAILED(hr))
+            {
+                HandleRuntimeError(hr);
+                return;
+            }
+        }
 
         if (m_settings.autoDetectionInner)
         {
@@ -631,8 +819,13 @@ void AmbientLight::RenderBackBuffer()
                         };
 
                         // now copy the zoomed inner box to the effect texture
-                        m_copy.Render(m_deferred.Get(), m_effectCanvasTexture, zoomedRect.left, zoomedRect.top, RECT_WIDTH(zoomedRect), RECT_HEIGHT(zoomedRect),
+                        hr = m_copy.Render(m_deferred.Get(), m_effectCanvasTexture, zoomedRect.left, zoomedRect.top, RECT_WIDTH(zoomedRect), RECT_HEIGHT(zoomedRect),
                             m_gameTexture, innerRect.left, innerRect.top, RECT_WIDTH(innerRect), RECT_HEIGHT(innerRect));
+                        if (FAILED(hr))
+                        {
+                            HandleRuntimeError(hr);
+                            return;
+                        }
 
                         m_zoomRendered = true;
                     }
@@ -660,8 +853,12 @@ void AmbientLight::RenderBackBuffer()
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 
     ComPtr<ID3D11CommandList> cmdlist = nullptr;
-    HRESULT hr;
     hr = m_deferred->FinishCommandList(FALSE, &cmdlist);
+    if (FAILED(hr))
+    {
+        HandleRuntimeError(hr);
+        return;
+    }
 
     if (cmdlist)
     {
@@ -671,16 +868,17 @@ void AmbientLight::RenderBackBuffer()
 
 void AmbientLight::Present()
 {
+    HRESULT hr = S_OK;
     if (m_showConfigWindow || m_clearConfigWindow)
     {
         m_clearConfigWindow = false;
-        m_swapchain->Present(1, 0);
+        hr = m_swapchain->Present(1, 0);
         m_presented = true;
     }
     else if (m_zoomRendered)
     {
         // if zoom is enabled with inner bars, always present the whole backbuffer to avoid artifacts on the zoomed inner box
-        m_swapchain->Present(1, 0);
+        hr = m_swapchain->Present(1, 0);
         m_presented = true;
     }
     else
@@ -709,7 +907,7 @@ void AmbientLight::Present()
             param.pScrollOffset = nullptr;
             param.pScrollRect = nullptr;
 
-            HRESULT hr = m_swapchain->Present1(1, 0, &param);
+            hr = m_swapchain->Present1(1, 0, &param);
             if (FAILED(hr))
             {
                 // in case of error, try normal present
@@ -722,6 +920,17 @@ void AmbientLight::Present()
             m_presented = false;
         }
     }
+
+    HandleRuntimeError(hr);
+}
+
+void AmbientLight::HandleRuntimeError(HRESULT hr)
+{
+    if (FAILED(hr))
+    {
+        m_ready = false;
+        PostMessage(m_hwnd, WM_DISPLAYCHANGE, 0, 0);
+    }
 }
 
 void AmbientLight::Detect()
@@ -730,14 +939,22 @@ void AmbientLight::Detect()
     {
         if (m_detectionTimer.HasElapsed(m_settings.autoDetectionTime))
         {
-            m_capture.Capture();
+            HRESULT hr = m_capture.Capture();
+            if (FAILED(hr))
+            {
+                if (hr != DXGI_ERROR_WAIT_TIMEOUT)
+                    HandleRuntimeError(hr);
+                return;
+            }
             ComPtr<ID3D11Texture2D> desktopTexture = m_capture.GetDesktopTexture();
             if (!desktopTexture)
                 return;
 
             TextureView desktopTextureView;
-            desktopTextureView.CreateViews(m_device.Get(), desktopTexture.Get(), false, true, false);
-            m_detection.Detect(m_immediate.Get(), desktopTextureView);
+            if (FAILED(desktopTextureView.CreateViews(m_device.Get(), desktopTexture.Get(), false, true, false)))
+                return;
+            if (FAILED(m_detection.Detect(m_immediate.Get(), desktopTextureView)))
+                return;
 
             std::vector<BlackBar> detected = m_detection.GetDetectedBars();
 
@@ -749,7 +966,9 @@ void AmbientLight::Detect()
 
             if (updateSettings)
             {
-                UpdateSettings();
+                hr = UpdateSettings();
+                if (FAILED(hr))
+                    m_ready = false;
             }
         }
     }
@@ -797,7 +1016,7 @@ void AmbientLight::Wait()
 		if (timeSinceLastDetect < (ULONGLONG)m_settings.autoDetectionTime)
 		{
 			ULONGLONG remaining = (ULONGLONG)m_settings.autoDetectionTime - timeSinceLastDetect;
-			Sleep(min(1000, (DWORD)remaining));
+			Sleep(std::min<DWORD>(1000, (DWORD)remaining));
             //char logBuffer[128] = { 0 };
             //sprintf_s(logBuffer, "Sleeping for %llu ms until next detection...\n", remaining);
             //OutputDebugStringA(logBuffer);

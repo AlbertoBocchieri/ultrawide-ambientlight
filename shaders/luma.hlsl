@@ -102,12 +102,12 @@ void CSRowAnalysis(uint3 id : SV_DispatchThreadID)
     for (uint x = 0; x < Width; ++x)
     {
         float luma = LumaInputTexture.Load(int3(x, y, 0));
+        sum += luma;
+        sumSq += luma * luma;
 
         if (luma <= BlackThreshold)
         {
             darkCount++;
-            sum += luma;
-            sumSq += luma * luma;
         }
     }
 
@@ -125,7 +125,7 @@ void CSRowAnalysis(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    float n = (float) darkCount;
+    float n = (float) Width;
     float mean = sum / n;
     float variance = (sumSq / n) - (mean * mean);
 
@@ -149,12 +149,12 @@ void CSColAnalysis(uint3 id : SV_DispatchThreadID)
     for (uint y = 0; y < Height; ++y)
     {
         float luma = LumaInputTexture.Load(int3(x, y, 0));
+        sum += luma;
+        sumSq += luma * luma;
 
         if (luma <= BlackThreshold)
         {
             darkCount++;
-            sum += luma;
-            sumSq += luma * luma;
         }
     }
 
@@ -171,7 +171,7 @@ void CSColAnalysis(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    float n = (float) darkCount;
+    float n = (float) Height;
     float mean = sum / n;
     float variance = (sumSq / n) - (mean * mean);
 

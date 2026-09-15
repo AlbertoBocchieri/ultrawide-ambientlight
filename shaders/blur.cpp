@@ -9,8 +9,7 @@
 using namespace DirectX;
 using namespace DirectX::SimpleMath;
 
-__declspec(align(16))
-struct VS_BLOOM_PARAMETERS
+struct alignas(16) VS_BLOOM_PARAMETERS
 {
     float bloomThreshold;
     float blurAmount;
@@ -21,8 +20,7 @@ struct VS_BLOOM_PARAMETERS
     uint8_t na[8];
 };
 
-__declspec(align(16))
-struct VS_BLUR_PARAMETERS
+struct alignas(16) VS_BLUR_PARAMETERS
 {
     static constexpr size_t MAX_SAMPLE_COUNT = 63;
 
@@ -32,7 +30,7 @@ struct VS_BLUR_PARAMETERS
 
     void SetBlurEffectParameters(float dx, float dy, size_t samples, const VS_BLOOM_PARAMETERS& params)
     {
-        sampleCount.x = (float)max(min(samples, MAX_SAMPLE_COUNT), 1);
+        sampleCount.x = (float)std::clamp(samples, size_t(1), MAX_SAMPLE_COUNT);
 
         sampleWeights[0].x = ComputeGaussian(0, params.blurAmount);
         sampleOffsets[0].x = sampleOffsets[0].y = 0.f;
@@ -118,6 +116,9 @@ Blur::~Blur()
 
 HRESULT Blur::Initialize(ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceContext> context, UINT width, UINT height, UINT samples)
 {
+    if (!device || !context || width == 0 || height == 0)
+        return E_INVALIDARG;
+
     HRESULT hr = S_OK;
     if (m_device != device)
     {
@@ -141,6 +142,7 @@ HRESULT Blur::Initialize(ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceContext
         samplerDesc.MinLOD = 0;
         samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
         hr = device->CreateSamplerState(&samplerDesc, &m_samplerState);
+        RETURN_IF_FAILED(hr);
 
         // Create constant buffer
         D3D11_BUFFER_DESC bufferDesc = {};
@@ -148,7 +150,9 @@ HRESULT Blur::Initialize(ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceContext
         bufferDesc.ByteWidth = sizeof(VS_BLUR_PARAMETERS);
         bufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         hr = device->CreateBuffer(&bufferDesc, nullptr, &m_blurParamsWidth);
+        RETURN_IF_FAILED(hr);
         hr = device->CreateBuffer(&bufferDesc, nullptr, &m_blurParamsHeight);
+        RETURN_IF_FAILED(hr);
 
         // Create temporary texture
         m_tempTexture.Clear();
@@ -163,25 +167,29 @@ HRESULT Blur::Initialize(ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceContext
     blurData.SetBlurEffectParameters(0, dy, samples, g_BloomPresets[g_Bloom]);
     m_context->UpdateSubresource(m_blurParamsHeight.Get(), 0, nullptr, &blurData, sizeof(VS_BLUR_PARAMETERS), 0);
 
-    return S_OK;
+    return hr;
 }
 
 HRESULT Blur::Render(ID3D11DeviceContext* context, TextureView target, UINT passes)
 {
     HRESULT hr = S_OK;
 
-    if (!target.GetTexture())
+    if (!context || !m_shader || !m_samplerState || !m_blurParamsWidth || !m_blurParamsHeight ||
+        !target.GetTexture() || !target.GetSRV() || !target.GetUAV())
         return E_FAIL;
 
     D3D11_TEXTURE2D_DESC target_desc = {};
     target.GetTexture()->GetDesc(&target_desc);
 
-    m_tempTexture.RecreateTexture(m_device.Get(), target_desc.Format, target_desc.Width, target_desc.Height);
+    hr = m_tempTexture.RecreateTexture(m_device.Get(), target_desc.Format, target_desc.Width, target_desc.Height);
+    RETURN_IF_FAILED(hr);
 
     for (UINT i = 0; i < passes; i++)
     {
-        DoBlurPass(context, m_tempTexture, target, BlurHorizontal);
-        DoBlurPass(context, target, m_tempTexture, BlurVertical);
+        hr = DoBlurPass(context, m_tempTexture, target, BlurHorizontal);
+        RETURN_IF_FAILED(hr);
+        hr = DoBlurPass(context, target, m_tempTexture, BlurVertical);
+        RETURN_IF_FAILED(hr);
     }
 
     return hr;
@@ -189,7 +197,8 @@ HRESULT Blur::Render(ID3D11DeviceContext* context, TextureView target, UINT pass
 
 HRESULT Blur::DoBlurPass(ID3D11DeviceContext* context, TextureView target, TextureView source, BlurDirection direction)
 {
-    HRESULT hr = S_OK;
+    if (!context || !target.GetTexture() || !target.GetUAV() || !source.GetTexture() || !source.GetSRV())
+        return E_FAIL;
 
     D3D11_TEXTURE2D_DESC target_desc = {};
     target.GetTexture()->GetDesc(&target_desc);

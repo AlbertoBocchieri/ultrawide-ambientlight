@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 #include <deque>
+#include <algorithm>
 #include <numeric>
 
 #include "settings.h"
@@ -56,8 +57,8 @@ struct BlackBar
 
     D3D11_BOX toBox() const
     {
-        UINT clampH = min(height, parentHeight);
-        UINT clampW = min(width, parentWidth);
+        UINT clampH = std::min(height, parentHeight);
+        UINT clampW = std::min(width, parentWidth);
         D3D11_BOX box = {};
         box.front = 0;
         box.back = 1;
@@ -110,46 +111,54 @@ public:
     {
 
     }
-    void CreateViews(ID3D11Device* device, ID3D11Texture2D* texture, bool createRtv = true, bool createSrv = true, bool createUav = true)
+    HRESULT CreateViews(ID3D11Device* device, ID3D11Texture2D* texture, bool createRtv = true, bool createSrv = true, bool createUav = true)
     {
+        Clear();
+        if (!texture || !device)
+            return E_INVALIDARG;
+
         m_texture = texture;
+        HRESULT hr = S_OK;
 
-        if (texture && device)
+        if (createSrv)
         {
-            if (createSrv)
-            {
-                D3D11_TEXTURE2D_DESC desc;
-                texture->GetDesc(&desc);
-                D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-                srvDesc.Format = desc.Format;
-                srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-                srvDesc.Texture2D.MipLevels = desc.MipLevels;
-                srvDesc.Texture2D.MostDetailedMip = 0;
-                device->CreateShaderResourceView(texture, &srvDesc, &m_srv);
-            }
-
-            if (createRtv)
-            {
-                device->CreateRenderTargetView(texture, nullptr, &m_rtv);
-            }
-
-            if (createUav)
-            {
-                D3D11_TEXTURE2D_DESC desc;
-                texture->GetDesc(&desc);
-                D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-                uavDesc.Format = desc.Format;
-                uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
-                uavDesc.Texture2D.MipSlice = 0;
-                device->CreateUnorderedAccessView(texture, &uavDesc, &m_uav);
-            }
+            D3D11_TEXTURE2D_DESC desc;
+            texture->GetDesc(&desc);
+            D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+            srvDesc.Format = desc.Format;
+            srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            srvDesc.Texture2D.MipLevels = desc.MipLevels;
+            srvDesc.Texture2D.MostDetailedMip = 0;
+            hr = device->CreateShaderResourceView(texture, &srvDesc, &m_srv);
+            RETURN_IF_FAILED(hr);
         }
+
+        if (createRtv)
+        {
+            hr = device->CreateRenderTargetView(texture, nullptr, &m_rtv);
+            RETURN_IF_FAILED(hr);
+        }
+
+        if (createUav)
+        {
+            D3D11_TEXTURE2D_DESC desc;
+            texture->GetDesc(&desc);
+            D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+            uavDesc.Format = desc.Format;
+            uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+            uavDesc.Texture2D.MipSlice = 0;
+            hr = device->CreateUnorderedAccessView(texture, &uavDesc, &m_uav);
+            RETURN_IF_FAILED(hr);
+        }
+
+        return S_OK;
     }
     void Clear()
     {
         m_texture = nullptr;
         m_srv = nullptr;
         m_rtv = nullptr;
+        m_uav = nullptr;
     }
 
     HRESULT RecreateTexture(ID3D11Device* device, DXGI_FORMAT format, UINT width, UINT height, UINT mipLevels = 1, bool generateMips = false)
@@ -193,8 +202,10 @@ public:
             hr = device->CreateTexture2D(&desc, nullptr, &texture);
             if (SUCCEEDED(hr))
             {
-                CreateViews(device, texture);
+                hr = CreateViews(device, texture);
                 texture->Release();
+                if (FAILED(hr))
+                    Clear();
             }
         }
         return hr;
@@ -224,21 +235,20 @@ private:
     ComPtr<ID3D11UnorderedAccessView> m_uav;
 };
 
-__declspec(align(16))
-class PerfTimer {
+class alignas(16) PerfTimer {
 public:
     PerfTimer() :
         m_name("Unnamed"),
-        m_maxRecords(10),
+        m_frequency{},
+        m_startTime{},
         m_records(),
-        m_frequency({ 0 }),
-        m_startTime({ 0 })
+        m_maxRecords(10)
     {
         QueryPerformanceFrequency(&m_frequency);
     }
 
     PerfTimer(std::string name, size_t maxRecords = 10)
-        : m_name(name), m_maxRecords(maxRecords), m_records(), m_frequency({ 0 }), m_startTime({ 0 }) {
+        : m_name(name), m_frequency{}, m_startTime{}, m_records(), m_maxRecords(maxRecords) {
         QueryPerformanceFrequency(&m_frequency);
     }
 
@@ -281,8 +291,7 @@ struct ScopedPerfTimer {
     ~ScopedPerfTimer() { timer.Stop(); }
 };
 
-__declspec(align(16))
-class ElapsedTimer {
+class alignas(16) ElapsedTimer {
 public:
     ElapsedTimer() {
         m_last = 0;

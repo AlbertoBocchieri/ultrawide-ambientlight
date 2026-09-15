@@ -88,7 +88,13 @@ LRESULT UiWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 void InitUI(HWND hwnd, ID3D11Device* device, ID3D11DeviceContext* device_context, AppSettings& settings)
 {
     IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
+    static bool platformInitialized = false;
+    static ID3D11Device* rendererDevice = nullptr;
+    static float loadedFontSize = 0.0f;
+
+    if (ImGui::GetCurrentContext() == nullptr)
+        ImGui::CreateContext();
+
     ImGuiIO& io = ImGui::GetIO();
 
     if (imguiFilePath.empty())
@@ -103,26 +109,40 @@ void InitUI(HWND hwnd, ID3D11Device* device, ID3D11DeviceContext* device_context
 
     // load Segoe UI font
     float fontSize = 20.0f * settings.uiScale;
-    io.Fonts->Clear();
-
-    ImFont* arial_font = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", fontSize);
-    io.Fonts->Build();
+    bool fontChanged = loadedFontSize != fontSize;
+    if (fontChanged)
+    {
+        io.Fonts->Clear();
+        io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", fontSize);
+        io.Fonts->Build();
+        loadedFontSize = fontSize;
+    }
 
     // Setup Dear ImGui style
     ImGui::StyleColorsDark();
 
-    // Setup Platform/Renderer backends
-    static bool firstInit = true;
-    if (!firstInit)
+    // The Win32 backend is window-bound and only needs one initialization.
+    if (!platformInitialized)
     {
-        ImGui_ImplDX11_Shutdown();
-        ImGui_ImplWin32_Shutdown();
+        ImGui_ImplWin32_Init(hwnd);
+        platformInitialized = true;
     }
 
-    ImGui_ImplWin32_Init(hwnd);
-    ImGui_ImplDX11_Init(device, device_context);
+    // Recreate only the renderer backend when the D3D device changes.
+    if (rendererDevice != device)
+    {
+        if (rendererDevice)
+            ImGui_ImplDX11_Shutdown();
+        ImGui_ImplDX11_Init(device, device_context);
+        rendererDevice = device;
+    }
+    else if (fontChanged)
+    {
+        ImGui_ImplDX11_InvalidateDeviceObjects();
+    }
 
     // first initialization
+    static bool firstInit = true;
     if (firstInit)
     {
         PostMessage(hwnd, WM_TOGGLE_CONFIG_WINDOW, 1, 0);
@@ -166,7 +186,7 @@ bool RenderUI(HWND hwnd, AppSettings& settings, UINT gameWidth, UINT gameHeight,
 
                     for (size_t i = 0; i < displays.size(); ++i)
                     {
-                        bool selected = (settings.display == i);
+                        bool selected = (settings.display == static_cast<int>(i));
 
                         char label[256] = { 0 };
                         sprintf_s(label, "%lld: %d x %d", i, displays[i].width, displays[i].height);
@@ -242,7 +262,7 @@ bool RenderUI(HWND hwnd, AppSettings& settings, UINT gameWidth, UINT gameHeight,
                             "Increase this to avoid false positives (requires more of the area to be dark),\n"
                             "or decrease to detect thinner/partial bars.");
                     }
-                    if (ImGui::DragInt("Detection Interval", (int*)&settings.autoDetectionTime, 0.1f, 1, 3000, "%d ms"))
+                    if (ImGui::DragInt("Detection Interval", &settings.autoDetectionTime, 0.1f, 1, 3000, "%d ms"))
                     {
                         SaveSettings(settings);
                     }
@@ -272,8 +292,8 @@ bool RenderUI(HWND hwnd, AppSettings& settings, UINT gameWidth, UINT gameHeight,
                         int reservedSize[2] = { (int)settings.autoDetectionReservedWidth, (int)settings.autoDetectionReservedHeight };
                         if (ImGui::InputInt2("", reservedSize, ImGuiInputTextFlags_CharsDecimal))
                         {
-                            settings.autoDetectionReservedWidth = (UINT)max(0, reservedSize[0]);
-                            settings.autoDetectionReservedHeight = (UINT)max(0, reservedSize[1]);
+                            settings.autoDetectionReservedWidth = (UINT)std::max(0, reservedSize[0]);
+                            settings.autoDetectionReservedHeight = (UINT)std::max(0, reservedSize[1]);
 
                             SaveSettings(settings);
                         }
@@ -326,8 +346,8 @@ bool RenderUI(HWND hwnd, AppSettings& settings, UINT gameWidth, UINT gameHeight,
                         {
                             if (settings.resolutions.current == res.name)
                             {
-                                res.width = res_input[0];
-                                res.height = res_input[1];
+                                res.width = static_cast<UINT>(std::max(1, res_input[0]));
+                                res.height = static_cast<UINT>(std::max(1, res_input[1]));
                                 break;
                             }
                         }
@@ -352,18 +372,24 @@ bool RenderUI(HWND hwnd, AppSettings& settings, UINT gameWidth, UINT gameHeight,
 
             ImGui::SeparatorText("Blur");
             {
-                if (ImGui::DragInt("Passes", (int*)&settings.blurPasses, 0.1f, 0, 128))
+                int blurPasses = static_cast<int>(settings.blurPasses);
+                if (ImGui::DragInt("Passes", &blurPasses, 0.1f, 0, 128))
                 {
+                    settings.blurPasses = static_cast<UINT>(std::max(0, blurPasses));
                     SaveSettings(settings);
                 }
 
-                if (ImGui::DragInt("Samples", (int*)&settings.blurSamples, 0.1f, 1, 63))
+                int blurSamples = static_cast<int>(settings.blurSamples);
+                if (ImGui::DragInt("Samples", &blurSamples, 0.1f, 1, 63))
                 {
+                    settings.blurSamples = static_cast<UINT>(std::max(1, blurSamples));
                     SaveSettings(settings);
                 }
 
-                if (ImGui::DragInt("Downsampling Levels", (int*)&settings.mipmapLevels, 0.1f, 0, 12))
+                int mipmapLevels = static_cast<int>(settings.mipmapLevels);
+                if (ImGui::DragInt("Downsampling Levels", &mipmapLevels, 0.1f, 0, 12))
                 {
+                    settings.mipmapLevels = static_cast<UINT>(std::max(0, mipmapLevels));
                     SaveSettings(settings);
                 }
             }
@@ -390,8 +416,10 @@ bool RenderUI(HWND hwnd, AppSettings& settings, UINT gameWidth, UINT gameHeight,
             }
 
             ImGui::SeparatorText("Misc");
-            if (ImGui::DragInt("Frame rate", (int*)&settings.frameRate, 0.1f, 10, 500))
+            int frameRate = static_cast<int>(settings.frameRate);
+            if (ImGui::DragInt("Frame rate", &frameRate, 0.1f, 10, 500))
             {
+                settings.frameRate = static_cast<UINT>(std::max(10, frameRate));
                 SaveSettings(settings);
             }
 
@@ -402,9 +430,10 @@ bool RenderUI(HWND hwnd, AppSettings& settings, UINT gameWidth, UINT gameHeight,
             }
             ImGui::SameLine(); HelpMarker("Temporal color smoothing. 0 disables it; 300-1000 ms is a useful range.");
 
-            if (ImGui::DragInt("Zoom", (int*)&settings.zoom, 1, 0, 16))
+            int zoom = static_cast<int>(settings.zoom);
+            if (ImGui::DragInt("Zoom", &zoom, 1, 0, 16))
             {
-                settings.zoom = std::clamp(settings.zoom, 0u, 16u);
+                settings.zoom = static_cast<UINT>(std::clamp(zoom, 0, 16));
                 SaveSettings(settings);
             }
 
@@ -443,7 +472,7 @@ bool RenderUI(HWND hwnd, AppSettings& settings, UINT gameWidth, UINT gameHeight,
             {
                 ImGui::SetClipboardText(log.c_str());
             }
-            ImGui::TextWrapped(log.c_str());
+            ImGui::TextWrapped("%s", log.c_str());
             ImGui::EndTabItem();
         }
 

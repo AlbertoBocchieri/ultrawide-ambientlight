@@ -2,16 +2,13 @@
 #include "d3dcompiler.h"
 #include "copy_main_bin.h"
 
-#include <algorithm>
-
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "d3dcompiler.lib")
 #pragma comment(lib, "dxgi.lib")
 
 using namespace DirectX;
 
-__declspec(align(16))
-struct COPY_PARAMETERS
+struct alignas(16) COPY_PARAMETERS
 {
     // Register 0: [x, y, z, w] -> 16 bytes
     DirectX::XMFLOAT2 srcOffset;
@@ -25,7 +22,7 @@ struct COPY_PARAMETERS
     uint32_t flipHorizontal;
     uint32_t flipVertical;
     float    blend;
-    float    padding;              // Manual padding to fill the 4-component register
+    float    padding;
 };
 
 Copy::Copy()
@@ -61,6 +58,7 @@ HRESULT Copy::Initialize(ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceContext
         samplerDesc.MinLOD = 0;
         samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
         hr = device->CreateSamplerState(&samplerDesc, &m_samplerState);
+        RETURN_IF_FAILED(hr);
 
         // Create constant buffer
         D3D11_BUFFER_DESC bufferDesc = {};
@@ -68,6 +66,7 @@ HRESULT Copy::Initialize(ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceContext
         bufferDesc.ByteWidth = sizeof(COPY_PARAMETERS);
         bufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         hr = device->CreateBuffer(&bufferDesc, nullptr, &m_params);
+        RETURN_IF_FAILED(hr);
     }
 
     return hr;
@@ -77,10 +76,11 @@ HRESULT Copy::Render(ID3D11DeviceContext* context, TextureView target, UINT targ
     TextureView source, UINT sourceOffsetX, UINT sourceOffsetY, UINT sourceWidth, UINT sourceHeight,
     Flip flip, float blend, TextureView previous)
 {
-    HRESULT hr = S_OK;
-
-    if (!target.GetTexture() || !source.GetTexture())
+    if (!context || !m_shader || !m_params || !m_samplerState ||
+        !target.GetTexture() || !target.GetUAV() || !source.GetTexture() || !source.GetSRV())
         return E_FAIL;
+    if (blend < 1.0f && !previous.GetSRV())
+        return E_INVALIDARG;
 
     D3D11_TEXTURE2D_DESC target_desc = {};
     target.GetTexture()->GetDesc(&target_desc);
@@ -94,6 +94,8 @@ HRESULT Copy::Render(ID3D11DeviceContext* context, TextureView target, UINT targ
 
     switch (flip)
     {
+    case FlipNone:
+        break;
     case FlipHorizontal:
         copyParams.flipHorizontal = 1;
         break;
@@ -123,16 +125,17 @@ HRESULT Copy::Render(ID3D11DeviceContext* context, TextureView target, UINT targ
 
     uav = nullptr;
     context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
-    srvs[0] = nullptr;
-    srvs[1] = nullptr;
-    context->CSSetShaderResources(0, 2, srvs);
+    ID3D11ShaderResourceView* nullSrvs[] = { nullptr, nullptr };
+    context->CSSetShaderResources(0, 2, nullSrvs);
 
     return S_OK;
 }
 
-HRESULT Copy::Render(ID3D11DeviceContext* context, TextureView target, TextureView source, Flip flip,
-    float blend, TextureView previous)
+HRESULT Copy::Render(ID3D11DeviceContext* context, TextureView target, TextureView source, Flip flip, float blend, TextureView previous)
 {
+    if (!context || !target.GetTexture() || !source.GetTexture())
+        return E_INVALIDARG;
+
     D3D11_TEXTURE2D_DESC source_desc = {};
     source.GetTexture()->GetDesc(&source_desc);
 

@@ -27,11 +27,13 @@ private:
     {
         DXGI_FORMAT format;
         DXGI_COLOR_SPACE_TYPE colorSpace;
+        DXGI_FORMAT outputFormat;
+        DXGI_COLOR_SPACE_TYPE outputColorSpace;
     };
 
 
     AppSettings m_settings;
-    void UpdateSettings();
+    HRESULT UpdateSettings();
     void ValidateSettings();
 
     DesktopFormat GetDesktopFormat();
@@ -59,6 +61,9 @@ private:
     bool m_effectRendered;
     bool m_presented;
     bool m_zoomRendered;
+    bool m_temporalReady = false;
+    INT64 m_lastTemporalTime = 0;
+    UINT m_temporalIndex = 0;
 
     UINT m_gameWidth;
     UINT m_gameHeight;
@@ -88,11 +93,7 @@ private:
     TextureView m_processedBlurTexture;
     TextureView m_effectCanvasTexture;
 
-    bool m_temporalReady = false;
-    INT64 m_lastTemporalTime = 0;
-    UINT m_temporalIndex = 0;
-
-    HRESULT CreateOffscreen(DXGI_FORMAT format);
+    HRESULT CreateOffscreen(DXGI_FORMAT captureFormat, DXGI_FORMAT outputFormat);
 
     bool ShouldRenderEffect();
     bool RenderEffects();
@@ -101,6 +102,7 @@ private:
     void ClearEffects();
 
     void Present();
+    void HandleRuntimeError(HRESULT hr);
     void Detect();
     void Wait();
 

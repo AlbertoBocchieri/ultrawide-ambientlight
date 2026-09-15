@@ -9,8 +9,7 @@
 
 using namespace DirectX;
 
-__declspec(align(16))
-struct VIGNETTE_PARAMETERS
+struct alignas(16) VIGNETTE_PARAMETERS
 {
     XMFLOAT2 center;
     float intensity;
@@ -71,9 +70,7 @@ HRESULT Vignette::Initialize(ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceCon
 
 HRESULT Vignette::Render(ID3D11DeviceContext* context, TextureView target)
 {
-    HRESULT hr = S_OK;
-
-    if (!target.GetTexture())
+    if (!context || !m_params || !target.GetTexture() || !target.GetUAV())
         return E_FAIL;
 
     D3D11_TEXTURE2D_DESC target_desc = {};

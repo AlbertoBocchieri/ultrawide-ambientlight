@@ -31,8 +31,7 @@ PS_INPUT VS(VS_INPUT input)
 
 )";
 
-__declspec(align(16))
-struct Vertex
+struct alignas(16) Vertex
 {
     XMFLOAT3 position;
     XMFLOAT2 texCoord;

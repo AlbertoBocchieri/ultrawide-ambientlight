@@ -11,7 +11,7 @@
 #define DEFAULT_BLUR_DOWNSCALE	    64
 #define DEFAULT_ZOOM                1
 #define DEFAULT_FRAMERATE	        30
-#define DEFAULT_TRANSITION_TIME     500
+#define DEFAULT_TRANSITION_TIME    500
 #define DEFAULT_MIRRORED	        true
 #define DEFAULT_STRETCHED           true
 #define DEFAULT_STRETCH_FACTOR      2.0f

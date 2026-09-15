@@ -33,5 +33,6 @@ private:
     ComPtr<IDXGIOutputDuplication> m_duplication;
 
     ComPtr<ID3D11Texture2D> m_desktopTexture;
+    bool m_frameAcquired = false;
     DXGI_OUTPUT_DESC1 m_outputDesc1 = {};
 };

@@ -8,10 +8,21 @@ DesktopCapture::DesktopCapture()
 
 DesktopCapture::~DesktopCapture()
 {
+    ReleaseFrame();
 }
 
 HRESULT DesktopCapture::Initialize(ComPtr<ID3D11Device> device, HMONITOR monitor, bool hdr)
 {
+    if (!device || !monitor)
+        return E_INVALIDARG;
+
+    // A frame belongs to the duplication object that acquired it. Release it
+    // before replacing that object during an HDR/display mode change.
+    ReleaseFrame();
+    m_duplication.Reset();
+    m_desktopTexture.Reset();
+    m_outputDesc1 = {};
+
     m_device = device;
     m_device->GetImmediateContext(&m_context);
 
@@ -28,12 +39,15 @@ HRESULT DesktopCapture::Initialize(ComPtr<ID3D11Device> device, HMONITOR monitor
 
     ComPtr<IDXGIOutput> dxgiOutput;
     UINT outputIndex = 0;
-    while (dxgiAdapter->EnumOutputs(outputIndex, dxgiOutput.ReleaseAndGetAddressOf()) != DXGI_ERROR_NOT_FOUND) {
+    while (true) {
+        hr = dxgiAdapter->EnumOutputs(outputIndex, dxgiOutput.ReleaseAndGetAddressOf());
+        if (hr == DXGI_ERROR_NOT_FOUND)
+            break;
+        RETURN_IF_FAILED(hr);
+
         DXGI_OUTPUT_DESC desc;
         if (SUCCEEDED(dxgiOutput->GetDesc(&desc))) {
             if (desc.Monitor == monitor) {
-                dxgiAdapter = dxgiAdapter;
-                dxgiOutput = dxgiOutput;
                 break;
             }
         }
@@ -53,8 +67,8 @@ HRESULT DesktopCapture::Initialize(ComPtr<ID3D11Device> device, HMONITOR monitor
     if (hdr)
     {
         formats.insert(formats.begin(), {
-            DXGI_FORMAT_R10G10B10A2_UNORM,
-            DXGI_FORMAT_R16G16B16A16_FLOAT
+            DXGI_FORMAT_R16G16B16A16_FLOAT,
+            DXGI_FORMAT_R10G10B10A2_UNORM
             });
     }
 
@@ -64,7 +78,8 @@ HRESULT DesktopCapture::Initialize(ComPtr<ID3D11Device> device, HMONITOR monitor
     if (SUCCEEDED(hr))
     {
         DXGI_OUTPUT_DESC1 desc1 = {};
-        dxgiOutput6->GetDesc1(&desc1);
+        hr = dxgiOutput6->GetDesc1(&desc1);
+        RETURN_IF_FAILED(hr);
         wchar_t buffer[256];
         swprintf_s(buffer, L"DesktopCapture: Output %s, ColorSpace: %d\n", desc1.DeviceName, desc1.ColorSpace);
         OutputDebugStringW(buffer);
@@ -72,7 +87,8 @@ HRESULT DesktopCapture::Initialize(ComPtr<ID3D11Device> device, HMONITOR monitor
         m_outputDesc1 = desc1;
     }
 
-    hr = dxgiOutput5->DuplicateOutput1(m_device.Get(), 0, 3, formats.data(), &m_duplication);
+    hr = dxgiOutput5->DuplicateOutput1(m_device.Get(), 0,
+        static_cast<UINT>(formats.size()), formats.data(), &m_duplication);
     RETURN_IF_FAILED(hr);
 
     return hr;
@@ -80,10 +96,10 @@ HRESULT DesktopCapture::Initialize(ComPtr<ID3D11Device> device, HMONITOR monitor
 
 HRESULT DesktopCapture::Capture()
 {
-    HRESULT hr = S_OK;
     if (!m_duplication)
     {
-        Initialize(m_device, m_monitor, m_hdr);
+        HRESULT hr = Initialize(m_device, m_monitor, m_hdr);
+        RETURN_IF_FAILED(hr);
     }
     if (!m_desktopTexture && m_duplication)
     {
@@ -99,18 +115,25 @@ HRESULT DesktopCapture::Capture()
             m_duplication = nullptr;
             return hr;
         }
+
+        m_frameAcquired = true;
         hr = desktopResource.As(&m_desktopTexture);
+        if (FAILED(hr))
+        {
+            ReleaseFrame();
+            return hr;
+        }
     }
 
-    return hr;
+    return S_OK;
 }
 
 HRESULT DesktopCapture::ReleaseFrame()
 {
-    if (m_desktopTexture)
-    {
-        m_desktopTexture = nullptr;
-        return m_duplication->ReleaseFrame();
-    }
-    return S_OK;
+    m_desktopTexture.Reset();
+    if (!m_frameAcquired)
+        return S_OK;
+
+    m_frameAcquired = false;
+    return m_duplication ? m_duplication->ReleaseFrame() : DXGI_ERROR_ACCESS_LOST;
 }

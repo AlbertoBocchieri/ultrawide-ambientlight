@@ -11,6 +11,7 @@ endif()
 
 project ("ambientlight")
 
+include(CTest)
 
 add_compile_definitions(UNICODE _UNICODE WINVER=0x0A00 _WIN32_WINNT=0x0A00)
 
@@ -156,3 +157,18 @@ install(TARGETS ambientlight_a DESTINATION bin)
 # copy files from scripts folder to bin
 install(DIRECTORY scripts/ DESTINATION bin)
 install(FILES config.ini DESTINATION bin)
+
+if (BUILD_TESTING)
+    add_executable(luma_encoding_test tests/luma_encoding_test.cpp)
+    target_include_directories(luma_encoding_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${DIRECTXMATH_INCLUDE_DIR}"
+    )
+    set_property(TARGET luma_encoding_test PROPERTY CXX_STANDARD 20)
+    add_test(NAME luma_encoding COMMAND luma_encoding_test)
+
+    add_executable(bar_detection_test tests/bar_detection_test.cpp)
+    target_include_directories(bar_detection_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_property(TARGET bar_detection_test PROPERTY CXX_STANDARD 20)
+    add_test(NAME bar_detection COMMAND bar_detection_test)
+endif()

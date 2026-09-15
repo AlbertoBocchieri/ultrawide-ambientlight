@@ -75,7 +75,6 @@ private:
 
     std::vector<BlackBar> m_blackBars;
 
-    RECT m_dirtyRects[2];
 
     UINT m_frameRate;
     INT64 m_lastPresentTime;

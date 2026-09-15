@@ -33,7 +33,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         return;
     }
     
-    float2 uv = (float2) DTid / dstSize;
+    float2 uv = (float2(DTid.xy) + 0.5) / dstSize;
     
     if (flipHorizontal > 0)
         uv.x = 1.0f - uv.x;

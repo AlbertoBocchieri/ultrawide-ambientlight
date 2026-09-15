@@ -83,8 +83,6 @@ AmbientLight::AmbientLight()
     m_showConfigWindow(false),
     m_clearConfigWindow(false)
 {
-    m_dirtyRects[0] = { 0, 0, 0, 0 };
-    m_dirtyRects[1] = { 0, 0, 0, 0 };
     timeBeginPeriod(1);
 }
 
@@ -483,7 +481,7 @@ void AmbientLight::Render()
     {
         HRESULT hr = m_capture.ReleaseFrame();
         HandleRuntimeError(hr);
-        if (ShouldRenderEffect())
+        if (ShouldRenderEffect() || m_settings.useAutoDetection)
         {
             ScopedPerfTimer captureTimer(m_capturePerfTimer);
             hr = m_capture.Capture();
@@ -494,11 +492,14 @@ void AmbientLight::Render()
     if (!m_ready)
         return;
 
+    Detect();
+    if (!m_ready) return;
+
     {
         ScopedPerfTimer renderTimer(m_renderPerfTimer);
         if (ShouldRenderEffect())
         {
-            RenderEffects();
+            if (!RenderEffects()) ClearEffects();
             if (!m_ready)
                 return;
         }
@@ -516,11 +517,6 @@ void AmbientLight::Render()
     Present();
     if (!m_ready)
         return;
-
-    {
-        ScopedPerfTimer detectTimer(m_detectPerfTimer);
-        Detect();
-    }
 
     Wait();
 
@@ -707,7 +703,7 @@ bool AmbientLight::RenderEffects()
 
 void AmbientLight::ClearEffects()
 {
-    if (m_effectRendered)
+    if (m_effectCanvasTexture.GetRTV())
     {
         ID3D11RenderTargetView* rtv = m_effectCanvasTexture.GetRTV();
         float color[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -868,59 +864,11 @@ void AmbientLight::RenderBackBuffer()
 
 void AmbientLight::Present()
 {
-    HRESULT hr = S_OK;
-    if (m_showConfigWindow || m_clearConfigWindow)
-    {
-        m_clearConfigWindow = false;
-        hr = m_swapchain->Present(1, 0);
-        m_presented = true;
-    }
-    else if (m_zoomRendered)
-    {
-        // if zoom is enabled with inner bars, always present the whole backbuffer to avoid artifacts on the zoomed inner box
-        hr = m_swapchain->Present(1, 0);
-        m_presented = true;
-    }
-    else
-    {
-        if (!m_presented)
-        {
-            memset(m_dirtyRects, 0, sizeof(m_dirtyRects));
-            int numRects = 0;
-            for (auto& bar : m_blackBars)
-            {
-                D3D11_BOX box = bar.toBox();
-                if (IS_BOX_EMPTY(box))
-                    continue;
-                m_dirtyRects[numRects].left = box.left;
-                m_dirtyRects[numRects].top = box.top;
-                m_dirtyRects[numRects].right = box.right;
-                m_dirtyRects[numRects].bottom = box.bottom;
-                numRects++;
-                if (numRects == 2)
-                    break;
-            }
-
-            DXGI_PRESENT_PARAMETERS param = {};
-            param.DirtyRectsCount = numRects;
-            param.pDirtyRects = m_dirtyRects;
-            param.pScrollOffset = nullptr;
-            param.pScrollRect = nullptr;
-
-            hr = m_swapchain->Present1(1, 0, &param);
-            if (FAILED(hr))
-            {
-                // in case of error, try normal present
-                hr = m_swapchain->Present(1, 0);
-            }
-            m_presented = true;
-        }
-        else
-        {
-            m_presented = false;
-        }
-    }
-
+    // The whole backbuffer is rewritten. A full present also clears the OLD
+    // band area after a shrink, orientation change, or disabled effect.
+    HRESULT hr = m_swapchain->Present(1, 0);
+    m_presented = SUCCEEDED(hr);
+    m_clearConfigWindow = false;
     HandleRuntimeError(hr);
 }
 
@@ -935,42 +883,18 @@ void AmbientLight::HandleRuntimeError(HRESULT hr)
 
 void AmbientLight::Detect()
 {
-    if (m_settings.useAutoDetection)
-    {
-        if (m_detectionTimer.HasElapsed(m_settings.autoDetectionTime))
-        {
-            HRESULT hr = m_capture.Capture();
-            if (FAILED(hr))
-            {
-                if (hr != DXGI_ERROR_WAIT_TIMEOUT)
-                    HandleRuntimeError(hr);
-                return;
-            }
-            ComPtr<ID3D11Texture2D> desktopTexture = m_capture.GetDesktopTexture();
-            if (!desktopTexture)
-                return;
-
-            TextureView desktopTextureView;
-            if (FAILED(desktopTextureView.CreateViews(m_device.Get(), desktopTexture.Get(), false, true, false)))
-                return;
-            if (FAILED(m_detection.Detect(m_immediate.Get(), desktopTextureView)))
-                return;
-
-            std::vector<BlackBar> detected = m_detection.GetDetectedBars();
-
-            bool updateSettings = false;
-            if (detected != m_blackBars)
-            {
-                updateSettings = true;
-            }
-
-            if (updateSettings)
-            {
-                hr = UpdateSettings();
-                if (FAILED(hr))
-                    m_ready = false;
-            }
-        }
+    if (!m_settings.useAutoDetection) return;
+    auto desktop = m_capture.GetDesktopTexture();
+    if (!desktop) return;
+    ScopedPerfTimer timer(m_detectPerfTimer);
+    TextureView view;
+    HRESULT hr = view.CreateViews(m_device.Get(), desktop.Get(), false, true, false);
+    if (SUCCEEDED(hr))
+        hr = m_detection.Detect(m_immediate.Get(), view, m_detectionTimer.HasElapsed(m_settings.autoDetectionTime));
+    if (FAILED(hr)) { HandleRuntimeError(hr); return; }
+    if (m_detection.GetDetectedBars() != m_blackBars) {
+        hr = UpdateSettings();
+        if (FAILED(hr)) HandleRuntimeError(hr);
     }
 }
 

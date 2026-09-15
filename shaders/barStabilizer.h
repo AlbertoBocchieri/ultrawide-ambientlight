@@ -15,7 +15,7 @@ struct BarStabilizer
         confirmations = 0;
     }
 
-    std::uint32_t Update(std::uint32_t detected, std::uint32_t requiredConfirmations = 4)
+    std::uint32_t Update(std::uint32_t detected, std::uint32_t requiredConfirmations = 4, bool confirmGrowth = true)
     {
         // Expose newly visible image immediately. Cover more image only after
         // the same larger bar has been observed repeatedly.
@@ -24,6 +24,14 @@ struct BarStabilizer
             value = detected;
             candidate = 0;
             confirmations = 0;
+            return value;
+        }
+
+        if (!confirmGrowth) {
+            if (candidate != detected) {
+                candidate = 0;
+                confirmations = 0;
+            }
             return value;
         }
 

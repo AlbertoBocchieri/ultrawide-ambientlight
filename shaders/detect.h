@@ -36,7 +36,7 @@ public:
         float blackThreshold, float blackRatio, bool symmetricBars, UINT reservedWidth, UINT reservedHeight,
         DXGI_FORMAT format, DXGI_COLOR_SPACE_TYPE colorSpace);
     
-    HRESULT Detect(ID3D11DeviceContext* context, TextureView target);
+    HRESULT Detect(ID3D11DeviceContext* context, TextureView target, bool confirmGrowth = true);
     HRESULT RenderLumaMask(ID3D11DeviceContext* context, TextureView target);
 
     std::vector<BlackBar> GetDetectedBars();

@@ -15,6 +15,10 @@ int main()
     assert(bar.Update(40) == 40);
     assert(bar.Update(80) == 40);
     assert(bar.Update(81) == 40); // A changing candidate restarts confirmation.
+    assert(bar.Update(81, 4, false) == 40); // Extra frames cannot accelerate growth.
+    assert(bar.Update(82, 4, false) == 40); // Intermediate disagreement resets consensus.
+    assert(bar.confirmations == 0);
+    assert(bar.Update(20, 4, false) == 20); // Shrink does not wait for the interval.
 
     UINT flags[101] = {};
     for (int i = 30; i <= 70; ++i)

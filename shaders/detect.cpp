@@ -326,7 +326,7 @@ HRESULT Detection::FetchColResults(ID3D11DeviceContext* pContext)
     return hr;
 }
 
-HRESULT Detection::Detect(ID3D11DeviceContext* context, TextureView target)
+HRESULT Detection::Detect(ID3D11DeviceContext* context, TextureView target, bool confirmGrowth)
 {
     HRESULT hr = S_OK;
 
@@ -400,10 +400,10 @@ HRESULT Detection::Detect(ID3D11DeviceContext* context, TextureView target)
     if (m_bottomBar >= m_height / 2 - 16)
         m_bottomBar = 0;
 
-    m_topBar = m_topStabilizer.Update(m_topBar);
-    m_bottomBar = m_bottomStabilizer.Update(m_bottomBar);
-    m_leftBar = m_leftStabilizer.Update(m_leftBar);
-    m_rightBar = m_rightStabilizer.Update(m_rightBar);
+    m_topBar = m_topStabilizer.Update(m_topBar, 4, confirmGrowth);
+    m_bottomBar = m_bottomStabilizer.Update(m_bottomBar, 4, confirmGrowth);
+    m_leftBar = m_leftStabilizer.Update(m_leftBar, 4, confirmGrowth);
+    m_rightBar = m_rightStabilizer.Update(m_rightBar, 4, confirmGrowth);
 
     return hr;
 }
